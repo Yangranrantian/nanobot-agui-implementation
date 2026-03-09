@@ -1,4 +1,4 @@
-﻿from pathlib import Path
+from pathlib import Path
 
 
 def test_agui_web_shell_exists_and_targets_session_api():
@@ -106,3 +106,16 @@ def test_agui_web_image_thumbnail_is_72px_default():
 
     assert "width: 72px;" in styles
     assert "height: 72px;" in styles
+
+
+def test_agui_web_right_pane_supports_inspector_and_preview_modes():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+    styles = (root / "src" / "styles.css").read_text(encoding="utf-8")
+
+    assert "rightPaneMode: 'inspector'" in app_js
+    assert "previewArtifactId: null" in app_js
+    assert 'id="right-pane"' in app_js
+    assert "function openArtifactPreview(" in app_js
+    assert "function closeArtifactPreview()" in app_js
+    assert ".right-pane" in styles

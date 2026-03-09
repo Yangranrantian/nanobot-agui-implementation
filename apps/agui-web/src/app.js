@@ -1,12 +1,16 @@
-﻿const state = {
+const state = {
   apiBase: readStoredApiBase(),
   sessions: [],
   currentSessionId: null,
   messages: [],
+  artifacts: [],
   interrupts: [],
+  pendingInterrupt: null,
   eventSource: null,
   pendingAssistantId: null,
   attachments: [],
+  rightPaneMode: 'inspector',
+  previewArtifactId: null,
   connectionStatus: 'offline',
   runState: 'idle',
   lastEventAt: null,
@@ -108,6 +112,8 @@ function renderAppShell() {
         </section>
       </main>
 
+      <aside id="right-pane" class="right-pane"></aside>
+
       <div id="image-viewer" class="image-viewer hidden" role="dialog" aria-modal="true">
         <button id="image-viewer-close" class="btn ghost image-viewer-close">Close</button>
         <img id="image-viewer-img" class="image-viewer-img" alt="preview" />
@@ -125,6 +131,7 @@ function getUi() {
     sessionList: document.getElementById('session-list'),
     sessionTitle: document.getElementById('session-title'),
     transcript: document.getElementById('transcript'),
+    rightPane: document.getElementById('right-pane'),
     imageViewer: document.getElementById('image-viewer'),
     imageViewerImg: document.getElementById('image-viewer-img'),
     imageViewerClose: document.getElementById('image-viewer-close'),
@@ -454,7 +461,11 @@ function handleEvent(event) {
 
     case 'interrupt.resolved':
       state.interrupts = state.interrupts.filter(item => item.interrupt_id !== event.interrupt_id);
+      if (state.pendingInterrupt && state.pendingInterrupt.interrupt_id === event.interrupt_id) {
+        state.pendingInterrupt = null;
+      }
       renderInterrupts();
+      renderRightPane();
       break;
 
     case 'error':
@@ -518,17 +529,36 @@ function renderMessageAttachments(container, attachments) {
         img.loading = 'lazy';
         img.alt = attachment.filename || 'image';
         img.src = src;
-        img.addEventListener('click', () => openImageViewer(src, img.alt));
+        img.addEventListener('click', () => {
+          openImageViewer(src, img.alt);
+          openArtifactPreview({
+            artifact_id: attachment.artifact_id || attachment.file_id,
+            type: 'image',
+            title: attachment.filename || 'image',
+            path: attachment.path,
+            mime_type: attachment.mime_type,
+          });
+        });
         wrap.appendChild(img);
         continue;
       }
     }
 
-    const badge = document.createElement('div');
+    const badge = document.createElement('button');
+    badge.type = 'button';
     badge.className = 'message-file';
     const name = attachment.filename || attachment.file_id || 'file';
     const mime = attachment.mime_type ? ` (${attachment.mime_type})` : '';
     badge.textContent = `${name}${mime}`;
+    badge.addEventListener('click', () => {
+      openArtifactPreview({
+        artifact_id: attachment.artifact_id || attachment.file_id || name,
+        type: attachment.mime_type && attachment.mime_type.startsWith('image/') ? 'image' : 'file',
+        title: name,
+        path: attachment.path,
+        mime_type: attachment.mime_type,
+      });
+    });
     wrap.appendChild(badge);
   }
 
@@ -633,6 +663,9 @@ async function uploadSelectedFiles() {
 
       const metadata = await response.json();
       state.attachments.push(metadata);
+      if (metadata.artifact) {
+        openArtifactPreview(metadata.artifact);
+      }
     } catch (error) {
       renderSystemMessage(`Upload failed for ${file.name}: ${error.message}`);
     }
@@ -657,6 +690,7 @@ function renderAttachments() {
 }
 
 function upsertInterrupt(interrupt) {
+  state.pendingInterrupt = interrupt;
   const existing = state.interrupts.findIndex(item => item.interrupt_id === interrupt.interrupt_id);
   if (existing >= 0) {
     state.interrupts[existing] = interrupt;
@@ -697,6 +731,82 @@ function renderInterrupts() {
     }
 
     ui.interrupts.appendChild(card);
+  }
+}
+
+function openArtifactPreview(artifact) {
+  if (!artifact) {
+    return;
+  }
+  const artifactId = artifact.artifact_id || artifact.file_id || artifact.path || artifact.title;
+  if (!artifactId) {
+    return;
+  }
+  const existing = state.artifacts.find(item => item.artifact_id === artifactId);
+  if (!existing) {
+    state.artifacts.unshift({ ...artifact, artifact_id: artifactId });
+  }
+  state.previewArtifactId = artifactId;
+  state.rightPaneMode = 'preview';
+  renderRightPane();
+}
+
+function closeArtifactPreview() {
+  state.previewArtifactId = null;
+  state.rightPaneMode = 'inspector';
+  renderRightPane();
+}
+
+function renderRightPane() {
+  if (!ui?.rightPane) {
+    return;
+  }
+
+  if (state.rightPaneMode === 'preview' && state.previewArtifactId) {
+    const artifact = state.artifacts.find(item => item.artifact_id === state.previewArtifactId);
+    if (artifact) {
+      ui.rightPane.innerHTML = `
+        <div class="pane-head">
+          <strong>Preview</strong>
+          <button id="close-preview" class="btn ghost">Close</button>
+        </div>
+        <div class="pane-block">
+          <div class="pane-title">${artifact.title || artifact.artifact_id}</div>
+          <div class="pane-meta">${artifact.type || 'file'}${artifact.mime_type ? ` · ${artifact.mime_type}` : ''}</div>
+          <div class="pane-path">${artifact.path || ''}</div>
+        </div>
+      `;
+      const closeBtn = document.getElementById('close-preview');
+      if (closeBtn) {
+        closeBtn.addEventListener('click', () => closeArtifactPreview());
+      }
+      return;
+    }
+  }
+
+  state.rightPaneMode = 'inspector';
+  const recent = state.artifacts.slice(0, 5);
+  const artifactList = recent.length
+    ? recent.map(item => `<button type="button" class="pane-link" data-artifact-id="${item.artifact_id}">${item.title || item.artifact_id}</button>`).join('')
+    : '<div class="empty">No artifacts yet.</div>';
+
+  ui.rightPane.innerHTML = `
+    <div class="pane-head"><strong>Inspector</strong></div>
+    <div class="pane-block">
+      <div class="pane-section-title">Artifacts</div>
+      ${artifactList}
+    </div>
+    <div class="pane-block">
+      <div class="pane-section-title">Status</div>
+      <div>Run: ${state.runState}</div>
+      <div>Pending interrupt: ${state.pendingInterrupt ? 'yes' : 'no'}</div>
+    </div>
+  `;
+  for (const btn of ui.rightPane.querySelectorAll('.pane-link')) {
+    btn.addEventListener('click', () => {
+      const artifact = state.artifacts.find(item => item.artifact_id === btn.dataset.artifactId);
+      openArtifactPreview(artifact);
+    });
   }
 }
 
@@ -765,6 +875,7 @@ function bootstrap() {
   ui = getUi();
   bindUiHandlers();
   updateStatusBar();
+  renderRightPane();
   void refreshSessions();
 }
 
