@@ -119,3 +119,16 @@ def test_agui_web_right_pane_supports_inspector_and_preview_modes():
     assert "function openArtifactPreview(" in app_js
     assert "function closeArtifactPreview()" in app_js
     assert ".right-pane" in styles
+
+
+def test_agui_web_renders_inline_collapsed_tool_execution_flow():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+    styles = (root / "src" / "styles.css").read_text(encoding="utf-8")
+
+    assert "case 'tool.started':" in app_js
+    assert "function renderToolFlow(container)" in app_js
+    assert "const details = document.createElement('details');" in app_js
+    assert "details.open = false;" in app_js
+    assert ".tool-flow" in styles
+    assert ".tool-flow details" in styles

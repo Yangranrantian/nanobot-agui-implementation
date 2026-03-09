@@ -3,6 +3,7 @@ const state = {
   sessions: [],
   currentSessionId: null,
   messages: [],
+  toolEvents: [],
   artifacts: [],
   interrupts: [],
   pendingInterrupt: null,
@@ -412,7 +413,7 @@ function connectEventStream(sessionId) {
   state.eventSource = source;
   setConnectionStatus('online');
 
-  ['run.started', 'message.started', 'message.delta', 'message.completed', 'interrupt.requested', 'interrupt.resolved', 'error'].forEach(name => {
+  ['run.started', 'message.started', 'message.delta', 'message.completed', 'tool.started', 'tool.completed', 'tool.failed', 'interrupt.requested', 'interrupt.resolved', 'error'].forEach(name => {
     source.addEventListener(name, event => {
       setConnectionStatus('online');
       state.lastEventAt = Date.now();
@@ -457,6 +458,14 @@ function handleEvent(event) {
 
     case 'interrupt.requested':
       upsertInterrupt(event);
+      renderRightPane();
+      break;
+
+    case 'tool.started':
+    case 'tool.completed':
+    case 'tool.failed':
+      upsertToolEvent(event);
+      renderTranscript();
       break;
 
     case 'interrupt.resolved':
@@ -489,6 +498,10 @@ function appendAssistantChunk(chunk, replace = false) {
 
   target.content = replace ? chunk : `${target.content}${chunk}`;
   renderTranscript();
+}
+
+function upsertToolEvent(event) {
+  state.toolEvents.push(event);
 }
 
 function openImageViewer(src, alt) {
@@ -586,7 +599,44 @@ function renderTranscript() {
     ui.transcript.appendChild(div);
   }
 
+  renderToolFlow(ui.transcript);
+
   ui.transcript.scrollTop = ui.transcript.scrollHeight;
+}
+
+function renderToolFlow(container) {
+  if (!state.toolEvents.length) {
+    return;
+  }
+  const wrap = document.createElement('div');
+  wrap.className = 'tool-flow';
+  for (const item of state.toolEvents) {
+    const payload = item.payload || {};
+    const details = document.createElement('details');
+    details.className = 'tool-flow-item';
+    details.open = false;
+    const summary = document.createElement('summary');
+    summary.textContent = payload.summary || payload.tool_name || item.type;
+    details.appendChild(summary);
+
+    const detail = document.createElement('div');
+    detail.className = 'tool-flow-detail';
+    detail.textContent = JSON.stringify(
+      {
+        type: item.type,
+        tool_call_id: payload.tool_call_id,
+        tool_name: payload.tool_name,
+        arguments_preview: payload.arguments_preview,
+        result_preview: payload.result_preview,
+        duration_ms: payload.duration_ms,
+      },
+      null,
+      2
+    );
+    details.appendChild(detail);
+    wrap.appendChild(details);
+  }
+  container.appendChild(wrap);
 }
 
 function renderSystemMessage(text) {
