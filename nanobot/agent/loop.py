@@ -1,10 +1,11 @@
-﻿"""Agent loop: the core processing engine."""
+"""Agent loop: the core processing engine."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import re
+import time
 import weakref
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -235,10 +236,45 @@ class AgentLoop:
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
-                    result = await self.tools.execute(tool_call.name, tool_call.arguments)
-                    messages = self.context.add_tool_result(
-                        messages, tool_call.id, tool_call.name, result
+                    started_at = time.perf_counter()
+                    base_payload = {
+                        "tool_call_id": tool_call.id,
+                        "tool_name": tool_call.name,
+                        "summary": f"Running {tool_call.name}",
+                        "arguments_preview": args_str[:200],
+                        "linked_artifact_ids": [],
+                    }
+                    await emit_event(on_event, make_event("tool.started", payload=base_payload))
+                    try:
+                        result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                    except Exception as exc:
+                        duration_ms = int((time.perf_counter() - started_at) * 1000)
+                        await emit_event(
+                            on_event,
+                            make_event(
+                                "tool.failed",
+                                payload={
+                                    **base_payload,
+                                    "result_preview": str(exc)[:200],
+                                    "duration_ms": duration_ms,
+                                },
+                            ),
+                        )
+                        raise
+                    duration_ms = int((time.perf_counter() - started_at) * 1000)
+                    result_preview = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+                    await emit_event(
+                        on_event,
+                        make_event(
+                            "tool.completed",
+                            payload={
+                                **base_payload,
+                                "result_preview": result_preview[:200],
+                                "duration_ms": duration_ms,
+                            },
+                        ),
                     )
+                    messages = self.context.add_tool_result(messages, tool_call.id, tool_call.name, result)
             else:
                 clean = self._strip_think(response.content)
                 # Don't persist error responses to session history 鈥?they can
