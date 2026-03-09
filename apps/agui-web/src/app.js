@@ -15,6 +15,7 @@ const state = {
   connectionStatus: 'offline',
   runState: 'idle',
   activeTaskCount: 0,
+  activeSkills: [],
   lastEventAt: null,
   isSending: false,
   isUploading: false,
@@ -986,6 +987,15 @@ function renderRightPane() {
       <div>Active tasks: ${state.activeTaskCount}</div>
       <div>Pending interrupt: ${state.pendingInterrupt ? 'yes' : 'no'}</div>
     </div>
+    <div class="pane-block">
+      <div class="pane-section-title">Skills</div>
+      <div>${state.activeSkills.length ? state.activeSkills.join(', ') : 'No active skills.'}</div>
+    </div>
+    <details class="pane-details">
+      <summary>Details</summary>
+      <div>Tool logs are shown inline in transcript.</div>
+      <div>Pane mode: ${state.rightPaneMode}</div>
+    </details>
   `;
   for (const btn of ui.rightPane.querySelectorAll('.pane-link')) {
     btn.addEventListener('click', () => {

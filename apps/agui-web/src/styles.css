@@ -227,6 +227,15 @@ select { font: inherit; }
   word-break: break-all;
 }
 
+.pane-details {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .chat-header {
   border-bottom: 1px solid var(--line);
   padding: 14px 18px;

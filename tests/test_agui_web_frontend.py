@@ -178,3 +178,14 @@ def test_agui_web_projects_task_events_into_inspector_status():
     assert "case 'task.started':" in app_js
     assert "case 'task.completed':" in app_js
     assert "activeTaskCount" in app_js
+
+
+def test_agui_web_inspector_is_minimal_and_details_collapsed():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+
+    assert "pane-section-title\">Artifacts" in app_js
+    assert "pane-section-title\">Status" in app_js
+    assert "pane-section-title\">Skills" in app_js
+    assert "<details class=\"pane-details\"" in app_js
+    assert "Tool logs are shown inline in transcript." in app_js
