@@ -145,3 +145,14 @@ def test_agui_web_renders_clickable_blue_artifact_references():
     assert "state.messages" in app_js
     assert ".artifact-reference" in styles
     assert "color: #2563eb" in styles
+
+
+def test_agui_web_supports_mermaid_inline_render_and_copy_source():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+    styles = (root / "src" / "styles.css").read_text(encoding="utf-8")
+
+    assert "function renderMermaidArtifact(" in app_js
+    assert "Copy Source" in app_js
+    assert "mermaid-preview-mode" in app_js
+    assert ".mermaid-artifact" in styles

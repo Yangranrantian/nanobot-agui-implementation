@@ -219,6 +219,19 @@ function isImageAttachment(attachment) {
   return name.endsWith('.png') || name.endsWith('.jpg') || name.endsWith('.jpeg') || name.endsWith('.webp');
 }
 
+function isMermaidAttachment(attachment) {
+  const type = String(attachment?.type || '').toLowerCase();
+  if (type === 'diagram') {
+    return true;
+  }
+  const format = String(attachment?.metadata?.diagram_format || '').toLowerCase();
+  if (format === 'mermaid') {
+    return true;
+  }
+  const name = String(attachment?.filename || attachment?.title || '').toLowerCase();
+  return name.endsWith('.mmd') || name.endsWith('.mermaid');
+}
+
 function updateStatusBar() {
   if (!ui) {
     return;
@@ -530,6 +543,11 @@ function renderMessageAttachments(container, attachments) {
   wrap.className = 'message-attachments';
 
   for (const attachment of attachments) {
+    if (isMermaidAttachment(attachment)) {
+      wrap.appendChild(renderMermaidArtifact(attachment));
+      continue;
+    }
+
     if (isImageAttachment(attachment) && attachment.file_id) {
       const src = filePreviewUrl(attachment);
       if (src) {
@@ -562,6 +580,47 @@ function renderMessageAttachments(container, attachments) {
   }
 
   container.appendChild(wrap);
+}
+
+function renderMermaidArtifact(attachment) {
+  const block = document.createElement('div');
+  block.className = 'mermaid-artifact';
+  const source = String(attachment.preview_text || attachment.source_text || 'graph TD;A-->B');
+  const title = attachment.title || attachment.filename || attachment.artifact_id || 'Mermaid Diagram';
+  block.innerHTML = `
+    <div class="mermaid-head">
+      <strong>${title}</strong>
+      <div class="mermaid-actions">
+        <button type="button" class="btn ghost mermaid-copy">Copy Source</button>
+        <button type="button" class="btn ghost mermaid-open">Open in Preview</button>
+      </div>
+    </div>
+    <pre class="mermaid-source">${source}</pre>
+  `;
+  const copyBtn = block.querySelector('.mermaid-copy');
+  if (copyBtn) {
+    copyBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(source);
+      } catch {
+        // best effort copy
+      }
+    });
+  }
+  const openBtn = block.querySelector('.mermaid-open');
+  if (openBtn) {
+    openBtn.addEventListener('click', () => {
+      openArtifactPreview({
+        artifact_id: attachment.artifact_id || attachment.file_id || title,
+        type: 'diagram',
+        title,
+        path: attachment.path,
+        mime_type: attachment.mime_type || 'text/plain',
+        preview_text: source,
+      });
+    });
+  }
+  return block;
 }
 
 function renderArtifactReference(attachment, fallbackTitle) {
@@ -819,6 +878,16 @@ function renderRightPane() {
   if (state.rightPaneMode === 'preview' && state.previewArtifactId) {
     const artifact = state.artifacts.find(item => item.artifact_id === state.previewArtifactId);
     if (artifact) {
+      const isDiagram = artifact.type === 'diagram';
+      const previewBody = isDiagram
+        ? `
+          <div class="mermaid-preview-mode">
+            <button type="button" class="btn ghost">Rendered</button>
+            <button type="button" class="btn ghost">Source</button>
+          </div>
+          <pre class="mermaid-source">${artifact.preview_text || ''}</pre>
+        `
+        : `<div class="pane-path">${artifact.path || ''}</div>`;
       ui.rightPane.innerHTML = `
         <div class="pane-head">
           <strong>Preview</strong>
@@ -827,7 +896,7 @@ function renderRightPane() {
         <div class="pane-block">
           <div class="pane-title">${artifact.title || artifact.artifact_id}</div>
           <div class="pane-meta">${artifact.type || 'file'}${artifact.mime_type ? ` · ${artifact.mime_type}` : ''}</div>
-          <div class="pane-path">${artifact.path || ''}</div>
+          ${previewBody}
         </div>
       `;
       const closeBtn = document.getElementById('close-preview');
