@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import mimetypes
@@ -12,6 +12,7 @@ from .events import make_event
 from .files import FileStore
 from .interrupts import InterruptEnvelope, InterruptRequest, InterruptResolvedResponse, InterruptResponse
 from .models import (
+    Artifact,
     FileUploadResponse,
     MessageListResponse,
     MessageRecord,
@@ -313,6 +314,21 @@ class WebRuntime:
     async def save_upload(self, upload) -> FileUploadResponse:
         saved = await self.files.save(upload)
         return FileUploadResponse(**saved.model_dump())
+
+    @staticmethod
+    def to_uploaded_artifact(file_info: dict) -> Artifact:
+        mime_type = str(file_info.get("mime_type") or "")
+        artifact_type = "image" if mime_type.startswith("image/") else "file"
+        return Artifact(
+            artifact_id=str(file_info.get("file_id") or ""),
+            type=artifact_type,
+            title=str(file_info.get("filename") or file_info.get("file_id") or "file"),
+            source="uploaded",
+            path=file_info.get("path"),
+            mime_type=file_info.get("mime_type"),
+            preview_text=file_info.get("filename"),
+            metadata={"size_bytes": file_info.get("size_bytes")},
+        )
 
     def _ensure_event_queue(self, session_id: str) -> asyncio.Queue[dict]:
         if session_id not in self._event_queues:
