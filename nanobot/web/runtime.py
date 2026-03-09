@@ -111,6 +111,31 @@ class WebRuntime:
             paths.append(path)
         return paths
 
+    @classmethod
+    def build_runtime_attachment(cls, filename: str, mime_type: str, path: str) -> dict:
+        if cls._is_image_attachment({"filename": filename, "mime_type": mime_type, "path": path}):
+            return {"mode": "image", "path": path, "mime_type": mime_type}
+        return {"mode": "path", "path": path, "mime_type": mime_type}
+
+    @classmethod
+    def _normalize_runtime_attachments(cls, attachments: list[dict]) -> list[dict]:
+        normalized: list[dict] = []
+        for item in attachments:
+            path = str(item.get("path") or "")
+            if not path:
+                continue
+            normalized.append(
+                {
+                    **item,
+                    "runtime": cls.build_runtime_attachment(
+                        str(item.get("filename") or ""),
+                        str(item.get("mime_type") or ""),
+                        path,
+                    ),
+                }
+            )
+        return normalized
+
     def _pick_multimodal_model(self, current_model: str | None) -> str | None:
         current_model = self._normalize_model_for_provider(current_model)
 
@@ -226,7 +251,7 @@ class WebRuntime:
                 channel="web",
                 chat_id=session_id,
                 media=media_paths,
-                metadata={"attachments": attachments},
+                metadata={"attachments": self._normalize_runtime_attachments(attachments)},
                 on_event=lambda event: self.publish_event(session_id, {**event, "run_id": event.get("run_id", run_id)}),
             )
         except Exception as exc:
@@ -313,8 +338,8 @@ class WebRuntime:
     ) -> InterruptResolvedResponse:
         return await self.resolve_interrupt(session_id, interrupt_id, response)
 
-    @staticmethod
-    def to_uploaded_artifact(file_info: dict) -> Artifact:
+    @classmethod
+    def to_uploaded_artifact(cls, file_info: dict) -> Artifact:
         mime_type = str(file_info.get("mime_type") or "")
         artifact_type = "image" if mime_type.startswith("image/") else "file"
         if mime_type in {"text/markdown", "text/x-markdown"}:
@@ -327,7 +352,14 @@ class WebRuntime:
             path=file_info.get("path"),
             mime_type=file_info.get("mime_type"),
             preview_text=file_info.get("filename"),
-            metadata={"size_bytes": file_info.get("size_bytes")},
+            metadata={
+                "size_bytes": file_info.get("size_bytes"),
+                "runtime": cls.build_runtime_attachment(
+                    str(file_info.get("filename") or ""),
+                    str(file_info.get("mime_type") or ""),
+                    str(file_info.get("path") or ""),
+                ),
+            },
         )
 
     async def _emit_artifact_created(self, session_id: str, artifact: Artifact) -> None:

@@ -48,3 +48,17 @@ def test_upload_creates_artifact_event_and_artifact_metadata(tmp_path):
     assert resp.status_code == 200
     body = resp.json()
     assert body["artifact"]["type"] in {"file", "report"}
+    assert body["artifact"]["metadata"]["runtime"]["mode"] == "path"
+
+
+def test_image_upload_artifact_metadata_keeps_multimodal_mode(tmp_path):
+    from nanobot.web.api import create_app
+    from nanobot.web.runtime import WebRuntime
+
+    client = TestClient(create_app(runtime=WebRuntime(tmp_path)))
+
+    resp = client.post("/files", files={"file": ("pic.png", b"fakepng", "image/png")})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["artifact"]["type"] == "image"
+    assert body["artifact"]["metadata"]["runtime"]["mode"] == "image"
