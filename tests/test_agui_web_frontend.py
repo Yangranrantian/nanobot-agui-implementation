@@ -132,3 +132,16 @@ def test_agui_web_renders_inline_collapsed_tool_execution_flow():
     assert "details.open = false;" in app_js
     assert ".tool-flow" in styles
     assert ".tool-flow details" in styles
+
+
+def test_agui_web_renders_clickable_blue_artifact_references():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+    styles = (root / "src" / "styles.css").read_text(encoding="utf-8")
+
+    assert "function renderArtifactReference(" in app_js
+    assert "artifact-reference" in app_js
+    assert "openArtifactPreview(" in app_js
+    assert "state.messages" in app_js
+    assert ".artifact-reference" in styles
+    assert "color: #2563eb" in styles

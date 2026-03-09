@@ -557,25 +557,29 @@ function renderMessageAttachments(container, attachments) {
       }
     }
 
-    const badge = document.createElement('button');
-    badge.type = 'button';
-    badge.className = 'message-file';
     const name = attachment.filename || attachment.file_id || 'file';
-    const mime = attachment.mime_type ? ` (${attachment.mime_type})` : '';
-    badge.textContent = `${name}${mime}`;
-    badge.addEventListener('click', () => {
-      openArtifactPreview({
-        artifact_id: attachment.artifact_id || attachment.file_id || name,
-        type: attachment.mime_type && attachment.mime_type.startsWith('image/') ? 'image' : 'file',
-        title: name,
-        path: attachment.path,
-        mime_type: attachment.mime_type,
-      });
-    });
-    wrap.appendChild(badge);
+    wrap.appendChild(renderArtifactReference(attachment, name));
   }
 
   container.appendChild(wrap);
+}
+
+function renderArtifactReference(attachment, fallbackTitle) {
+  const name = fallbackTitle || attachment.filename || attachment.file_id || 'file';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'artifact-reference';
+  btn.textContent = name;
+  btn.addEventListener('click', () => {
+    openArtifactPreview({
+      artifact_id: attachment.artifact_id || attachment.file_id || name,
+      type: attachment.mime_type && attachment.mime_type.startsWith('image/') ? 'image' : 'file',
+      title: name,
+      path: attachment.path,
+      mime_type: attachment.mime_type,
+    });
+  });
+  return btn;
 }
 
 function renderTranscript() {
