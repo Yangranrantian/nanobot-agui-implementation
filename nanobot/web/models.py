@@ -1,9 +1,9 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class CreateSessionRequest(BaseModel):
@@ -49,4 +49,22 @@ class FileUploadResponse(BaseModel):
     mime_type: str
     size_bytes: int
     path: str
+
+
+class AgentEvent(BaseModel):
+    type: str
+    session_id: str
+    run_id: str
+    timestamp: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("type")
+    @classmethod
+    def validate_type(cls, value: str) -> str:
+        if value == "error":
+            return value
+        families = ("message.", "tool.", "artifact.", "task.", "interrupt.")
+        if value.startswith(families):
+            return value
+        raise ValueError("Unsupported event type family for Event Model v2")
 
