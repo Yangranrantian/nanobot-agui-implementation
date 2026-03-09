@@ -1,4 +1,4 @@
-import pytest
+﻿import pytest
 from fastapi.testclient import TestClient
 
 
@@ -6,6 +6,7 @@ class FakeDispatchRuntime:
     def __init__(self, session_id: str = "sess_fake") -> None:
         self.session_id = session_id
         self.dispatched: list[dict] = []
+        self.deleted: list[str] = []
 
     def create_session(self):
         return {
@@ -34,6 +35,10 @@ class FakeDispatchRuntime:
             "session_id": session_id,
             "status": "accepted",
         }
+
+    def delete_session(self, session_id: str):
+        self.deleted.append(session_id)
+        return {"status": "deleted", "session_id": session_id}
 
 
 def test_web_runtime_exposes_session_routes():
@@ -96,6 +101,17 @@ def test_send_message_starts_agent_run(fake_runtime):
         }
     ]
 
+
+def test_delete_session_route(fake_runtime):
+    from nanobot.web.api import create_app
+
+    client = TestClient(create_app(runtime=fake_runtime))
+    session_id = client.post("/sessions", json={}).json()["session_id"]
+
+    resp = client.delete(f"/sessions/{session_id}")
+
+    assert resp.status_code == 200
+    assert fake_runtime.deleted == [session_id]
 
 
 def test_web_runtime_allows_browser_cors(client):

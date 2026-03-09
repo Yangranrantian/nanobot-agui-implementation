@@ -21,7 +21,6 @@ def test_agui_web_bootstrap_is_resilient_to_storage_failures():
     assert "try {\n  bootstrap();\n} catch (error) {" in app_js
 
 
-
 def test_agui_web_uses_custom_static_server_for_js_mime():
     root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
     package_json = (root / "package.json").read_text(encoding="utf-8")
@@ -58,7 +57,6 @@ def test_agui_web_attachment_upload_and_send_state_feedback():
     assert "attachments: sentAttachments" in app_js
 
 
-
 def test_agui_web_multimodal_history_rendering_is_human_readable():
     root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
     app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
@@ -66,4 +64,45 @@ def test_agui_web_multimodal_history_rendering_is_human_readable():
 
     assert "function normalizeMessageContent(content)" in app_js
     assert "item.type === 'image_url'" in app_js
+    assert "function cleanImagePlaceholder(content, attachments)" in app_js
     assert "#file-input" in styles
+    assert "display: none;" in styles
+    assert 'id="file-input" type="file" multiple hidden' in app_js
+
+
+def test_agui_web_renders_message_attachments_and_image_preview_modal():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+
+    assert "function filePreviewUrl(attachment)" in app_js
+    assert "function openImageViewer(src, alt)" in app_js
+    assert "id=\"image-viewer\"" in app_js
+    assert "img.className = 'message-image'" in app_js
+
+
+def test_agui_web_sessions_have_single_delete_current_action():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+    styles = (root / "src" / "styles.css").read_text(encoding="utf-8")
+
+    assert "delete-current-session" in app_js
+    assert "void deleteSession();" in app_js
+    assert "request(`/sessions/${sessionId}`, { method: 'DELETE' })" in app_js
+    assert "overflow-y: scroll;" in styles
+
+
+def test_agui_web_transcript_has_scrollbar_style():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    styles = (root / "src" / "styles.css").read_text(encoding="utf-8")
+
+    assert ".transcript::-webkit-scrollbar" in styles
+    assert ".session-list::-webkit-scrollbar" in styles
+    assert "scrollbar-gutter: stable" in styles
+
+
+def test_agui_web_image_thumbnail_is_72px_default():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    styles = (root / "src" / "styles.css").read_text(encoding="utf-8")
+
+    assert "width: 72px;" in styles
+    assert "height: 72px;" in styles

@@ -63,3 +63,25 @@ def test_runtime_context_is_separate_untrusted_user_message(tmp_path) -> None:
     assert "Channel: cli" in user_content
     assert "Chat ID: direct" in user_content
     assert "Return exactly: OK" in user_content
+
+
+def test_multimodal_user_content_puts_text_before_images(tmp_path) -> None:
+    workspace = _make_workspace(tmp_path)
+    img = workspace / "demo.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"a" * 16)
+
+    builder = ContextBuilder(workspace)
+    messages = builder.build_messages(
+        history=[],
+        current_message="what is in this image",
+        media=[str(img)],
+        channel="web",
+        chat_id="sess_1",
+    )
+
+    user_content = messages[-1]["content"]
+    assert isinstance(user_content, list)
+    assert user_content[0]["type"] == "text"
+    text_blocks = [item.get("text", "") for item in user_content if item.get("type") == "text"]
+    assert any("what is in this image" in block for block in text_blocks)
+    assert any(item.get("type") == "image_url" for item in user_content[1:])

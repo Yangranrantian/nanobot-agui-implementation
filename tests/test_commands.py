@@ -1,4 +1,4 @@
-import shutil
+﻿import shutil
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -45,7 +45,7 @@ def mock_paths():
 
 
 def test_onboard_fresh_install(mock_paths):
-    """No existing config — should create from scratch."""
+    """No existing config 鈥?should create from scratch."""
     config_file, workspace_dir = mock_paths
 
     result = runner.invoke(app, ["onboard"])
@@ -60,7 +60,7 @@ def test_onboard_fresh_install(mock_paths):
 
 
 def test_onboard_existing_config_refresh(mock_paths):
-    """Config exists, user declines overwrite — should refresh (load-merge-save)."""
+    """Config exists, user declines overwrite 鈥?should refresh (load-merge-save)."""
     config_file, workspace_dir = mock_paths
     config_file.write_text('{"existing": true}')
 
@@ -74,7 +74,7 @@ def test_onboard_existing_config_refresh(mock_paths):
 
 
 def test_onboard_existing_config_overwrite(mock_paths):
-    """Config exists, user confirms overwrite — should reset to defaults."""
+    """Config exists, user confirms overwrite 鈥?should reset to defaults."""
     config_file, workspace_dir = mock_paths
     config_file.write_text('{"existing": true}')
 
@@ -87,7 +87,7 @@ def test_onboard_existing_config_overwrite(mock_paths):
 
 
 def test_onboard_existing_workspace_safe_create(mock_paths):
-    """Workspace exists — should not recreate, but still add missing templates."""
+    """Workspace exists 鈥?should not recreate, but still add missing templates."""
     config_file, workspace_dir = mock_paths
     workspace_dir.mkdir(parents=True)
     config_file.write_text("{}")
@@ -364,3 +364,70 @@ def test_gateway_uses_config_directory_for_cron_store(monkeypatch, tmp_path: Pat
 
     assert isinstance(result.exception, _StopGateway)
     assert seen["cron_store"] == config_file.parent / "cron" / "jobs.json"
+
+
+
+def test_config_accepts_image_model_primary_in_camel_case():
+    config = Config.model_validate(
+        {
+            "agents": {
+                "defaults": {
+                    "imageModel": {
+                        "primary": "openai/gpt-5-mini",
+                    }
+                }
+            }
+        }
+    )
+
+    assert config.agents.defaults.image_model.primary == "openai/gpt-5-mini"
+
+
+def test_web_passes_provider_and_image_model_defaults_to_runtime(monkeypatch, tmp_path: Path) -> None:
+    config = Config()
+    config.agents.defaults.workspace = str(tmp_path / "workspace")
+    config.agents.defaults.model = "openai/gpt-5"
+    config.providers.openai.api_key = "test-key"
+    config.agents.defaults.image_model.primary = "openai/gpt-5-mini"
+
+    seen: dict[str, object] = {}
+
+    class _StopWeb(RuntimeError):
+        pass
+
+    class _FakeRuntime:
+        def __init__(self, workspace, agent_loop=None, image_model_primary=None, provider_name=None):
+            seen["workspace"] = workspace
+            seen["image_model_primary"] = image_model_primary
+            seen["provider_name"] = provider_name
+            seen["agent_loop"] = agent_loop
+
+    monkeypatch.setattr("nanobot.cli.commands._load_runtime_config", lambda *_args, **_kwargs: config)
+    monkeypatch.setattr("nanobot.cli.commands.sync_workspace_templates", lambda _path: None)
+    monkeypatch.setattr("nanobot.cli.commands._make_provider", lambda _config: object())
+    monkeypatch.setattr("nanobot.bus.queue.MessageBus", lambda: object())
+    monkeypatch.setattr("nanobot.config.paths.get_cron_dir", lambda: tmp_path / "cron")
+
+    class _FakeAgentLoop:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    monkeypatch.setattr("nanobot.agent.loop.AgentLoop", _FakeAgentLoop)
+    monkeypatch.setattr("nanobot.cron.service.CronService", lambda _store: object())
+    monkeypatch.setattr("nanobot.web.runtime.WebRuntime", _FakeRuntime)
+    monkeypatch.setattr("nanobot.web.api.create_app", lambda runtime=None: object())
+
+    def _stop_run(*_args, **_kwargs):
+        raise _StopWeb("stop")
+
+    monkeypatch.setattr("uvicorn.run", _stop_run)
+
+    result = runner.invoke(app, ["web"])
+
+    assert isinstance(result.exception, _StopWeb)
+    assert seen["workspace"] == config.workspace_path
+    assert seen["provider_name"] == "openai"
+    assert seen["image_model_primary"] == "openai/gpt-5-mini"
+
+
+

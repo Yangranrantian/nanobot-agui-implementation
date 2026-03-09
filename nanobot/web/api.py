@@ -1,10 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from .events import encode_sse
 from .interrupts import InterruptResolvedResponse, InterruptResponse
@@ -38,6 +38,13 @@ def create_app(*, runtime: WebRuntime | None = None, workspace: Path | None = No
     def list_sessions() -> SessionListResponse:
         return app.state.runtime.list_sessions()
 
+    @app.delete("/sessions/{session_id}")
+    def delete_session(session_id: str):
+        try:
+            return app.state.runtime.delete_session(session_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Session not found") from exc
+
     @app.get("/sessions/{session_id}/messages", response_model=MessageListResponse)
     def get_session_messages(session_id: str) -> MessageListResponse:
         return app.state.runtime.get_messages(session_id)
@@ -66,4 +73,12 @@ def create_app(*, runtime: WebRuntime | None = None, workspace: Path | None = No
     async def upload_file(file: UploadFile = File(...)) -> FileUploadResponse:
         return await app.state.runtime.save_upload(file)
 
+    @app.get("/files/{file_id}")
+    async def get_file(file_id: str):
+        target = app.state.runtime.files.resolve(file_id)
+        if target is None:
+            raise HTTPException(status_code=404, detail="File not found")
+        return FileResponse(path=target)
+
     return app
+

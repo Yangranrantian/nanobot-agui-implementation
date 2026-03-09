@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
@@ -25,6 +25,7 @@ class MessageRecord(BaseModel):
     role: str
     content: str | list | None = None
     timestamp: str | None = None
+    attachments: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class MessageListResponse(BaseModel):
@@ -48,3 +49,4 @@ class FileUploadResponse(BaseModel):
     mime_type: str
     size_bytes: int
     path: str
+

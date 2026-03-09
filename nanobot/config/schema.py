@@ -1,4 +1,4 @@
-"""Configuration schema using Pydantic."""
+﻿"""Configuration schema using Pydantic."""
 
 from pathlib import Path
 from typing import Literal
@@ -192,8 +192,8 @@ class QQConfig(Base):
     """QQ channel configuration using botpy SDK."""
 
     enabled: bool = False
-    app_id: str = ""  # 机器人 ID (AppID) from q.qq.com
-    secret: str = ""  # 机器人密钥 (AppSecret) from q.qq.com
+    app_id: str = ""  # 鏈哄櫒浜?ID (AppID) from q.qq.com
+    secret: str = ""  # 鏈哄櫒浜哄瘑閽?(AppSecret) from q.qq.com
     allow_from: list[str] = Field(
         default_factory=list
     )  # Allowed user openids (empty = public access)
@@ -205,7 +205,7 @@ class ChannelsConfig(Base):
     """Configuration for chat channels."""
 
     send_progress: bool = True  # stream agent's text progress to the channel
-    send_tool_hints: bool = False  # stream tool-call hints (e.g. read_file("…"))
+    send_tool_hints: bool = False  # stream tool-call hints (e.g. read_file("鈥?))
     whatsapp: WhatsAppConfig = Field(default_factory=WhatsAppConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     discord: DiscordConfig = Field(default_factory=DiscordConfig)
@@ -221,7 +221,13 @@ class ChannelsConfig(Base):
 class AgentDefaults(Base):
     """Default agent configuration."""
 
+    class ImageModel(Base):
+        """Image-capable model fallback configuration."""
+
+        primary: str | None = None
+
     workspace: str = "~/.nanobot/workspace"
+    image_model: ImageModel = Field(default_factory=ImageModel)
     model: str = "anthropic/claude-opus-4-5"
     provider: str = (
         "auto"  # Provider name (e.g. "anthropic", "openrouter") or "auto" for auto-detection
@@ -230,7 +236,7 @@ class AgentDefaults(Base):
     temperature: float = 0.1
     max_tool_iterations: int = 40
     memory_window: int = 100
-    reasoning_effort: str | None = None  # low / medium / high — enables LLM thinking mode
+    reasoning_effort: str | None = None  # low / medium / high 鈥?enables LLM thinking mode
 
 
 class AgentsConfig(Base):
@@ -258,14 +264,14 @@ class ProvidersConfig(Base):
     deepseek: ProviderConfig = Field(default_factory=ProviderConfig)
     groq: ProviderConfig = Field(default_factory=ProviderConfig)
     zhipu: ProviderConfig = Field(default_factory=ProviderConfig)
-    dashscope: ProviderConfig = Field(default_factory=ProviderConfig)  # 阿里云通义千问
+    dashscope: ProviderConfig = Field(default_factory=ProviderConfig)  # 闃块噷浜戦€氫箟鍗冮棶
     vllm: ProviderConfig = Field(default_factory=ProviderConfig)
     gemini: ProviderConfig = Field(default_factory=ProviderConfig)
     moonshot: ProviderConfig = Field(default_factory=ProviderConfig)
     minimax: ProviderConfig = Field(default_factory=ProviderConfig)
     aihubmix: ProviderConfig = Field(default_factory=ProviderConfig)  # AiHubMix API gateway
-    siliconflow: ProviderConfig = Field(default_factory=ProviderConfig)  # SiliconFlow (硅基流动)
-    volcengine: ProviderConfig = Field(default_factory=ProviderConfig)  # VolcEngine (火山引擎)
+    siliconflow: ProviderConfig = Field(default_factory=ProviderConfig)  # SiliconFlow (纭呭熀娴佸姩)
+    volcengine: ProviderConfig = Field(default_factory=ProviderConfig)  # VolcEngine (鐏北寮曟搸)
     openai_codex: ProviderConfig = Field(default_factory=ProviderConfig)  # OpenAI Codex (OAuth)
     github_copilot: ProviderConfig = Field(default_factory=ProviderConfig)  # Github Copilot (OAuth)
 
@@ -363,7 +369,7 @@ class Config(BaseSettings):
             kw = kw.lower()
             return kw in model_lower or kw.replace("-", "_") in model_normalized
 
-        # Explicit provider prefix wins — prevents `github-copilot/...codex` matching openai_codex.
+        # Explicit provider prefix wins 鈥?prevents `github-copilot/...codex` matching openai_codex.
         for spec in PROVIDERS:
             p = getattr(self.providers, spec.name, None)
             if p and model_prefix and normalized_prefix == spec.name:
@@ -378,7 +384,7 @@ class Config(BaseSettings):
                     return p, spec.name
 
         # Fallback: gateways first, then others (follows registry order)
-        # OAuth providers are NOT valid fallbacks — they require explicit model selection
+        # OAuth providers are NOT valid fallbacks 鈥?they require explicit model selection
         for spec in PROVIDERS:
             if spec.is_oauth:
                 continue

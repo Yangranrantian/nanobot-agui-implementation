@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import mimetypes
 from pathlib import Path
@@ -21,6 +21,15 @@ class FileStore:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
 
+    def resolve(self, file_id: str) -> Path | None:
+        matches = list(self.root.glob(f"{file_id}_*"))
+        if not matches:
+            return None
+        target = matches[0]
+        if not target.is_file():
+            return None
+        return target
+
     async def save(self, upload: UploadFile) -> UploadedFile:
         file_id = f"file_{uuid4().hex[:12]}"
         filename = upload.filename or file_id
@@ -35,3 +44,4 @@ class FileStore:
             size_bytes=len(data),
             path=str(target),
         )
+

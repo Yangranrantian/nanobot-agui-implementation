@@ -44,6 +44,7 @@ class LiteLLMProvider(LLMProvider):
         super().__init__(api_key, api_base)
         self.default_model = default_model
         self.extra_headers = extra_headers or {}
+        self.provider_name = provider_name
 
         # Detect gateway / local deployment.
         # provider_name (from config key) is the primary signal;
@@ -86,6 +87,77 @@ class LiteLLMProvider(LLMProvider):
             resolved = resolved.replace("{api_base}", effective_base)
             os.environ.setdefault(env_name, resolved)
 
+    @staticmethod
+    def _strip_zhipu_prefix(model: str) -> str:
+        if "/" not in model:
+            return model
+        prefix, remainder = model.split("/", 1)
+        if prefix.lower() in {"zhipu", "zai"} and remainder:
+            return remainder
+        return model
+
+    def _use_unprefixed_zhipu_models(self) -> bool:
+        provider = (self.provider_name or "").lower().replace("-", "_")
+        if provider not in {"zhipu", "zai"}:
+            return False
+        base = (self.api_base or "").lower()
+        return "bigmodel.cn" in base or "api.z.ai" in base
+
+    @staticmethod
+    def _extract_base64_from_data_url(url: str) -> str:
+        marker = ";base64,"
+        lower = url.lower()
+        if not lower.startswith("data:image/"):
+            return url
+        index = lower.find(marker)
+        if index < 0:
+            return url
+        return url[index + len(marker):]
+
+    def _normalize_zhipu_message_content(self, content: Any) -> Any:
+        if not isinstance(content, list):
+            return content
+
+        normalized_blocks: list[Any] = []
+        for block in content:
+            if not isinstance(block, dict):
+                normalized_blocks.append(block)
+                continue
+            if block.get("type") != "image_url":
+                normalized_blocks.append(block)
+                continue
+
+            image_url = block.get("image_url")
+            if isinstance(image_url, dict):
+                url = image_url.get("url")
+                if isinstance(url, str):
+                    new_url = self._extract_base64_from_data_url(url)
+                    if new_url != url:
+                        normalized_blocks.append(
+                            {
+                                **block,
+                                "image_url": {
+                                    **image_url,
+                                    "url": new_url,
+                                },
+                            }
+                        )
+                        continue
+            normalized_blocks.append(block)
+
+        return normalized_blocks
+
+    def _normalize_zhipu_multimodal_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not self._use_unprefixed_zhipu_models():
+            return messages
+
+        normalized: list[dict[str, Any]] = []
+        for message in messages:
+            clean = dict(message)
+            clean["content"] = self._normalize_zhipu_message_content(clean.get("content"))
+            normalized.append(clean)
+        return normalized
+
     def _resolve_model(self, model: str) -> str:
         """Resolve model name by applying provider/gateway prefixes."""
         if self._gateway:
@@ -96,6 +168,9 @@ class LiteLLMProvider(LLMProvider):
             if prefix and not model.startswith(f"{prefix}/"):
                 model = f"{prefix}/{model}"
             return model
+
+        if self._use_unprefixed_zhipu_models():
+            return self._strip_zhipu_prefix(model)
 
         # Standard mode: auto-prefix for known providers
         spec = find_by_model(model)
@@ -239,12 +314,19 @@ class LiteLLMProvider(LLMProvider):
         # LiteLLM to reject the request with "max_tokens must be at least 1".
         max_tokens = max(1, max_tokens)
 
+        prepared_messages = self._sanitize_empty_content(messages)
+        prepared_messages = self._normalize_zhipu_multimodal_messages(prepared_messages)
+
         kwargs: dict[str, Any] = {
             "model": model,
-            "messages": self._sanitize_messages(self._sanitize_empty_content(messages), extra_keys=extra_msg_keys),
+            "messages": self._sanitize_messages(prepared_messages, extra_keys=extra_msg_keys),
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
+
+        # LiteLLM cannot infer provider from bare `glm-*` model names.
+        if self._use_unprefixed_zhipu_models() and "/" not in model:
+            kwargs["custom_llm_provider"] = "openai"
 
         # Apply model-specific overrides (e.g. kimi-k2.5 temperature)
         self._apply_model_overrides(model, kwargs)
@@ -325,6 +407,10 @@ class LiteLLMProvider(LLMProvider):
 
         reasoning_content = getattr(message, "reasoning_content", None) or None
         thinking_blocks = getattr(message, "thinking_blocks", None) or None
+
+        provider = (self.provider_name or "").lower().replace("-", "_")
+        if (not content) and reasoning_content and provider in {"zhipu", "zai"}:
+            content = reasoning_content
 
         return LLMResponse(
             content=content,

@@ -1,4 +1,4 @@
-"""CLI commands for nanobot."""
+﻿"""CLI commands for nanobot."""
 
 import asyncio
 import os
@@ -182,21 +182,21 @@ def onboard():
         if typer.confirm("Overwrite?"):
             config = Config()
             save_config(config)
-            console.print(f"[green]✓[/green] Config reset to defaults at {config_path}")
+            console.print(f"[green]+[/green] Config reset to defaults at {config_path}")
         else:
             config = load_config()
             save_config(config)
-            console.print(f"[green]✓[/green] Config refreshed at {config_path} (existing values preserved)")
+            console.print(f"[green]+[/green] Config refreshed at {config_path} (existing values preserved)")
     else:
         save_config(Config())
-        console.print(f"[green]✓[/green] Created config at {config_path}")
+        console.print(f"[green]+[/green] Created config at {config_path}")
 
     # Create workspace
     workspace = get_workspace_path()
 
     if not workspace.exists():
         workspace.mkdir(parents=True, exist_ok=True)
-        console.print(f"[green]✓[/green] Created workspace at {workspace}")
+        console.print(f"[green]+[/green] Created workspace at {workspace}")
 
     sync_workspace_templates(workspace)
 
@@ -438,15 +438,15 @@ def gateway(
     )
 
     if channels.enabled_channels:
-        console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
+        console.print(f"[green]+[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
     else:
         console.print("[yellow]Warning: No channels enabled[/yellow]")
 
     cron_status = cron.status()
     if cron_status["jobs"] > 0:
-        console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
+        console.print(f"[green]+[/green] Cron: {cron_status['jobs']} scheduled jobs")
 
-    console.print(f"[green]✓[/green] Heartbeat: every {hb_cfg.interval_s}s")
+    console.print(f"[green]+[/green] Heartbeat: every {hb_cfg.interval_s}s")
 
     async def run():
         try:
@@ -517,7 +517,12 @@ def web(
         mcp_servers=loaded.tools.mcp_servers,
         channels_config=loaded.channels,
     )
-    runtime = WebRuntime(loaded.workspace_path, agent_loop=agent_loop)
+    runtime = WebRuntime(
+        loaded.workspace_path,
+        agent_loop=agent_loop,
+        image_model_primary=loaded.agents.defaults.image_model.primary,
+        provider_name=loaded.get_provider_name(loaded.agents.defaults.model),
+    )
     app = create_app(runtime=runtime)
 
     console.print(f"{__logo__} Starting nanobot web runtime on http://{host}:{port} ...")
@@ -594,10 +599,10 @@ def agent(
             return
         if ch and not tool_hint and not ch.send_progress:
             return
-        console.print(f"  [dim]↳ {content}[/dim]")
+        console.print(f"  [dim]鈫?{content}[/dim]")
 
     if message:
-        # Single message mode — direct call, no bus needed
+        # Single message mode 鈥?direct call, no bus needed
         async def run_once():
             with _thinking_ctx():
                 response = await agent_loop.process_direct(message, session_id, on_progress=_cli_progress)
@@ -606,7 +611,7 @@ def agent(
 
         asyncio.run(run_once())
     else:
-        # Interactive mode — route through bus like other channels
+        # Interactive mode 鈥?route through bus like other channels
         from nanobot.bus.events import InboundMessage
         _init_prompt_session()
         console.print(f"{__logo__} Interactive mode (type [bold]exit[/bold] or [bold]Ctrl+C[/bold] to quit)\n")
@@ -650,7 +655,7 @@ def agent(
                             elif ch and not is_tool_hint and not ch.send_progress:
                                 pass
                             else:
-                                console.print(f"  [dim]↳ {msg.content}[/dim]")
+                                console.print(f"  [dim]鈫?{msg.content}[/dim]")
                         elif not turn_done.is_set():
                             if msg.content:
                                 turn_response.append(msg.content)
@@ -736,14 +741,14 @@ def channels_status():
     wa = config.channels.whatsapp
     table.add_row(
         "WhatsApp",
-        "✓" if wa.enabled else "✗",
+        "yes" if wa.enabled else "no",
         wa.bridge_url
     )
 
     dc = config.channels.discord
     table.add_row(
         "Discord",
-        "✓" if dc.enabled else "✗",
+        "yes" if dc.enabled else "no",
         dc.gateway_url
     )
 
@@ -752,7 +757,7 @@ def channels_status():
     fs_config = f"app_id: {fs.app_id[:10]}..." if fs.app_id else "[dim]not configured[/dim]"
     table.add_row(
         "Feishu",
-        "✓" if fs.enabled else "✗",
+        "yes" if fs.enabled else "no",
         fs_config
     )
 
@@ -761,7 +766,7 @@ def channels_status():
     mc_base = mc.base_url or "[dim]not configured[/dim]"
     table.add_row(
         "Mochat",
-        "✓" if mc.enabled else "✗",
+        "yes" if mc.enabled else "no",
         mc_base
     )
 
@@ -770,7 +775,7 @@ def channels_status():
     tg_config = f"token: {tg.token[:10]}..." if tg.token else "[dim]not configured[/dim]"
     table.add_row(
         "Telegram",
-        "✓" if tg.enabled else "✗",
+        "yes" if tg.enabled else "no",
         tg_config
     )
 
@@ -779,7 +784,7 @@ def channels_status():
     slack_config = "socket" if slack.app_token and slack.bot_token else "[dim]not configured[/dim]"
     table.add_row(
         "Slack",
-        "✓" if slack.enabled else "✗",
+        "yes" if slack.enabled else "no",
         slack_config
     )
 
@@ -788,7 +793,7 @@ def channels_status():
     dt_config = f"client_id: {dt.client_id[:10]}..." if dt.client_id else "[dim]not configured[/dim]"
     table.add_row(
         "DingTalk",
-        "✓" if dt.enabled else "✗",
+        "yes" if dt.enabled else "no",
         dt_config
     )
 
@@ -797,7 +802,7 @@ def channels_status():
     qq_config = f"app_id: {qq.app_id[:10]}..." if qq.app_id else "[dim]not configured[/dim]"
     table.add_row(
         "QQ",
-        "✓" if qq.enabled else "✗",
+        "yes" if qq.enabled else "no",
         qq_config
     )
 
@@ -806,7 +811,7 @@ def channels_status():
     em_config = em.imap_host if em.imap_host else "[dim]not configured[/dim]"
     table.add_row(
         "Email",
-        "✓" if em.enabled else "✗",
+        "yes" if em.enabled else "no",
         em_config
     )
 
@@ -863,7 +868,7 @@ def _get_bridge_dir() -> Path:
         console.print("  Building...")
         subprocess.run(["npm", "run", "build"], cwd=user_bridge, check=True, capture_output=True)
 
-        console.print("[green]✓[/green] Bridge ready\n")
+        console.print("[green]+[/green] Bridge ready\n")
     except subprocess.CalledProcessError as e:
         console.print(f"[red]Build failed: {e}[/red]")
         if e.stderr:
@@ -916,8 +921,8 @@ def status():
 
     console.print(f"{__logo__} nanobot Status\n")
 
-    console.print(f"Config: {config_path} {'[green]✓[/green]' if config_path.exists() else '[red]✗[/red]'}")
-    console.print(f"Workspace: {workspace} {'[green]✓[/green]' if workspace.exists() else '[red]✗[/red]'}")
+    console.print(f"Config: {config_path} {'[green]+[/green]' if config_path.exists() else '[red]x[/red]'}")
+    console.print(f"Workspace: {workspace} {'[green]+[/green]' if workspace.exists() else '[red]x[/red]'}")
 
     if config_path.exists():
         from nanobot.providers.registry import PROVIDERS
@@ -930,16 +935,16 @@ def status():
             if p is None:
                 continue
             if spec.is_oauth:
-                console.print(f"{spec.label}: [green]✓ (OAuth)[/green]")
+                console.print(f"{spec.label}: [green]鉁?(OAuth)[/green]")
             elif spec.is_local:
                 # Local deployments show api_base instead of api_key
                 if p.api_base:
-                    console.print(f"{spec.label}: [green]✓ {p.api_base}[/green]")
+                    console.print(f"{spec.label}: [green]鉁?{p.api_base}[/green]")
                 else:
                     console.print(f"{spec.label}: [dim]not set[/dim]")
             else:
                 has_key = bool(p.api_key)
-                console.print(f"{spec.label}: {'[green]✓[/green]' if has_key else '[dim]not set[/dim]'}")
+                console.print(f"{spec.label}: {'[green]+[/green]' if has_key else '[dim]not set[/dim]'}")
 
 
 # ============================================================================
@@ -999,9 +1004,9 @@ def _login_openai_codex() -> None:
                 prompt_fn=lambda s: typer.prompt(s),
             )
         if not (token and token.access):
-            console.print("[red]✗ Authentication failed[/red]")
+            console.print("[red]鉁?Authentication failed[/red]")
             raise typer.Exit(1)
-        console.print(f"[green]✓ Authenticated with OpenAI Codex[/green]  [dim]{token.account_id}[/dim]")
+        console.print(f"[green]鉁?Authenticated with OpenAI Codex[/green]  [dim]{token.account_id}[/dim]")
     except ImportError:
         console.print("[red]oauth_cli_kit not installed. Run: pip install oauth-cli-kit[/red]")
         raise typer.Exit(1)
@@ -1019,7 +1024,7 @@ def _login_github_copilot() -> None:
 
     try:
         asyncio.run(_trigger())
-        console.print("[green]✓ Authenticated with GitHub Copilot[/green]")
+        console.print("[green]鉁?Authenticated with GitHub Copilot[/green]")
     except Exception as e:
         console.print(f"[red]Authentication error: {e}[/red]")
         raise typer.Exit(1)
@@ -1027,3 +1032,7 @@ def _login_github_copilot() -> None:
 
 if __name__ == "__main__":
     app()
+
+
+
+

@@ -69,7 +69,10 @@ function renderAppShell() {
           </div>
         </div>
 
-        <button id="new-session" class="btn primary">New chat</button>
+        <div class="sidebar-actions">
+          <button id="new-session" class="btn primary">New chat</button>
+          <button id="delete-current-session" class="btn ghost danger">Delete current</button>
+        </div>
 
         <div class="sessions-head">Sessions</div>
         <div id="session-list" class="session-list"></div>
@@ -97,13 +100,18 @@ function renderAppShell() {
           <div id="attachments" class="attachments"></div>
           <textarea id="composer" placeholder="Send a message... Enter to send, Shift+Enter for new line"></textarea>
           <div class="composer-actions">
-            <input id="file-input" type="file" multiple />
+            <input id="file-input" type="file" multiple hidden />
             <label for="file-input" id="file-picker" class="btn ghost file-picker">Choose files</label>
             <span id="file-status" class="file-status">No files selected</span>
             <button id="send-message" class="btn primary">Send</button>
           </div>
         </section>
       </main>
+
+      <div id="image-viewer" class="image-viewer hidden" role="dialog" aria-modal="true">
+        <button id="image-viewer-close" class="btn ghost image-viewer-close">Close</button>
+        <img id="image-viewer-img" class="image-viewer-img" alt="preview" />
+      </div>
     </div>
   `;
 }
@@ -113,9 +121,13 @@ function getUi() {
     apiBase: document.getElementById('api-base'),
     saveBase: document.getElementById('save-base'),
     newSession: document.getElementById('new-session'),
+    deleteCurrentSession: document.getElementById('delete-current-session'),
     sessionList: document.getElementById('session-list'),
     sessionTitle: document.getElementById('session-title'),
     transcript: document.getElementById('transcript'),
+    imageViewer: document.getElementById('image-viewer'),
+    imageViewerImg: document.getElementById('image-viewer-img'),
+    imageViewerClose: document.getElementById('image-viewer-close'),
     interrupts: document.getElementById('interrupts'),
     attachments: document.getElementById('attachments'),
     composer: document.getElementById('composer'),
@@ -131,6 +143,14 @@ function getUi() {
 
 function normalizeMessageContent(content) {
   if (typeof content === 'string') {
+    const trimmed = content.trim();
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        return normalizeMessageContent(JSON.parse(trimmed));
+      } catch {
+        // Keep original string when it's not valid JSON content blocks.
+      }
+    }
     return content;
   }
   if (Array.isArray(content)) {
@@ -151,6 +171,44 @@ function normalizeMessageContent(content) {
     return '';
   }
   return String(content);
+}
+
+function normalizeMessageAttachments(attachments) {
+  if (!Array.isArray(attachments)) {
+    return [];
+  }
+  return attachments.filter(item => item && typeof item === 'object');
+}
+
+function cleanImagePlaceholder(content, attachments) {
+  if (!content) {
+    return '';
+  }
+  const hasImage = normalizeMessageAttachments(attachments).some(isImageAttachment);
+  if (!hasImage) {
+    return content;
+  }
+  return String(content)
+    .split('\n')
+    .filter(line => line.trim() !== '[image]')
+    .join('\n')
+    .trim();
+}
+
+function filePreviewUrl(attachment) {
+  if (!attachment || !attachment.file_id) {
+    return null;
+  }
+  return `${state.apiBase}/files/${attachment.file_id}`;
+}
+
+function isImageAttachment(attachment) {
+  const mime = String(attachment?.mime_type || '').toLowerCase();
+  if (mime.startsWith('image/')) {
+    return true;
+  }
+  const name = String(attachment?.filename || '').toLowerCase();
+  return name.endsWith('.png') || name.endsWith('.jpg') || name.endsWith('.jpeg') || name.endsWith('.webp');
 }
 
 function updateStatusBar() {
@@ -214,8 +272,9 @@ async function request(path, options = {}) {
 function toUiMessages(items) {
   return (items || []).map((item, index) => ({
     id: `history-${index}`,
-    role: item.role === 'assistant' ? 'assistant' : 'user',
+    role: item.role === 'assistant' ? 'assistant' : item.role === 'system' ? 'system' : 'user',
     content: normalizeMessageContent(item.content),
+    attachments: normalizeMessageAttachments(item.attachments),
   }));
 }
 
@@ -265,6 +324,27 @@ function renderSessions() {
       void selectSession(session.session_id);
     });
     ui.sessionList.appendChild(button);
+  }
+}
+
+async function deleteSession(sessionId = state.currentSessionId) {
+  if (!sessionId) {
+    return;
+  }
+
+  try {
+    await request(`/sessions/${sessionId}`, { method: 'DELETE' });
+    if (state.currentSessionId === sessionId) {
+      state.currentSessionId = null;
+      state.messages = [];
+      renderTranscript();
+      if (state.eventSource) {
+        state.eventSource.close();
+      }
+    }
+    await refreshSessions();
+  } catch (error) {
+    renderSystemMessage(`Delete session failed: ${error.message}`);
   }
 }
 
@@ -349,7 +429,7 @@ function handleEvent(event) {
     case 'message.started':
       setRunState('running');
       state.pendingAssistantId = `assistant-${Date.now()}`;
-      state.messages.push({ id: state.pendingAssistantId, role: 'assistant', content: '...' });
+      state.messages.push({ id: state.pendingAssistantId, role: 'assistant', content: '...', attachments: [] });
       renderTranscript();
       break;
 
@@ -391,13 +471,68 @@ function appendAssistantChunk(chunk, replace = false) {
   let target = state.messages.find(message => message.id === state.pendingAssistantId);
 
   if (!target) {
-    target = { id: `assistant-${Date.now()}`, role: 'assistant', content: '' };
+    target = { id: `assistant-${Date.now()}`, role: 'assistant', content: '', attachments: [] };
     state.messages.push(target);
     state.pendingAssistantId = target.id;
   }
 
   target.content = replace ? chunk : `${target.content}${chunk}`;
   renderTranscript();
+}
+
+function openImageViewer(src, alt) {
+  if (!ui?.imageViewer || !ui?.imageViewerImg) {
+    return;
+  }
+  ui.imageViewerImg.src = src;
+  ui.imageViewerImg.alt = alt || 'preview';
+  ui.imageViewer.classList.remove('hidden');
+}
+
+function closeImageViewer() {
+  if (!ui?.imageViewer || !ui?.imageViewerImg) {
+    return;
+  }
+  ui.imageViewer.classList.add('hidden');
+  ui.imageViewerImg.removeAttribute('src');
+}
+
+function renderMessageAttachments(container, attachments) {
+  if (!attachments || attachments.length === 0) {
+    return;
+  }
+
+  const wrap = document.createElement('div');
+  wrap.className = 'message-attachments';
+
+  for (const attachment of attachments) {
+    if (isImageAttachment(attachment) && attachment.file_id) {
+      const src = filePreviewUrl(attachment);
+      if (src) {
+        const img = document.createElement('img');
+        img.className = 'message-image';
+        img.style.width = '72px';
+        img.style.height = '72px';
+        img.style.cursor = 'zoom-in';
+        img.title = 'Click to enlarge';
+        img.loading = 'lazy';
+        img.alt = attachment.filename || 'image';
+        img.src = src;
+        img.addEventListener('click', () => openImageViewer(src, img.alt));
+        wrap.appendChild(img);
+        continue;
+      }
+    }
+
+    const badge = document.createElement('div');
+    badge.className = 'message-file';
+    const name = attachment.filename || attachment.file_id || 'file';
+    const mime = attachment.mime_type ? ` (${attachment.mime_type})` : '';
+    badge.textContent = `${name}${mime}`;
+    wrap.appendChild(badge);
+  }
+
+  container.appendChild(wrap);
 }
 
 function renderTranscript() {
@@ -411,7 +546,13 @@ function renderTranscript() {
   for (const message of state.messages) {
     const div = document.createElement('div');
     div.className = `message ${message.role}`;
-    div.textContent = message.content;
+
+    const body = document.createElement('div');
+    body.className = 'message-body';
+    body.textContent = cleanImagePlaceholder(message.content, message.attachments);
+    div.appendChild(body);
+
+    renderMessageAttachments(div, normalizeMessageAttachments(message.attachments));
     ui.transcript.appendChild(div);
   }
 
@@ -419,7 +560,7 @@ function renderTranscript() {
 }
 
 function renderSystemMessage(text) {
-  state.messages.push({ id: `system-${Date.now()}`, role: 'system', content: text });
+  state.messages.push({ id: `system-${Date.now()}`, role: 'system', content: text, attachments: [] });
   renderTranscript();
 }
 
@@ -438,13 +579,13 @@ async function sendCurrentMessage() {
     return;
   }
 
-  state.messages.push({ id: `user-${Date.now()}`, role: 'user', content });
+  const sentAttachments = [...state.attachments];
+  state.messages.push({ id: `user-${Date.now()}`, role: 'user', content, attachments: sentAttachments });
   renderTranscript();
   ui.composer.value = '';
   setSending(true);
 
   try {
-    const sentAttachments = [...state.attachments];
     await request(`/sessions/${state.currentSessionId}/messages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -583,6 +724,10 @@ function bindUiHandlers() {
     await refreshSessions(session.session_id);
   });
 
+  ui.deleteCurrentSession.addEventListener('click', () => {
+    void deleteSession();
+  });
+
   ui.sendMessage.addEventListener('click', () => {
     void sendCurrentMessage();
   });
@@ -596,6 +741,22 @@ function bindUiHandlers() {
 
   ui.fileInput.addEventListener('change', () => {
     void uploadSelectedFiles();
+  });
+
+  ui.imageViewerClose.addEventListener('click', () => {
+    closeImageViewer();
+  });
+
+  ui.imageViewer.addEventListener('click', event => {
+    if (event.target === ui.imageViewer) {
+      closeImageViewer();
+    }
+  });
+
+  window.addEventListener('keydown', event => {
+    if (event.key === 'Escape') {
+      closeImageViewer();
+    }
   });
 }
 
@@ -612,3 +773,8 @@ try {
 } catch (error) {
   renderFatalError(error);
 }
+
+
+
+
+

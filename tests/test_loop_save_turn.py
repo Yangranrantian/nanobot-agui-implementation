@@ -38,4 +38,4 @@ def test_save_turn_keeps_image_placeholder_after_runtime_strip() -> None:
         }],
         skip=0,
     )
-    assert session.messages[0]["content"] == [{"type": "text", "text": "[image]"}]
+    assert session.messages[0]["content"] == "[image]"

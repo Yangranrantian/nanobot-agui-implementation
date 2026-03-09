@@ -373,7 +373,7 @@ class AgentLoop:
                 current_message=msg.content, channel=channel, chat_id=chat_id,
             )
             final_content, _, all_msgs = await self._run_agent_loop(messages)
-            self._save_turn(session, all_msgs, 1 + len(history))
+            self._save_turn(session, all_msgs, 1 + len(history), msg.metadata.get("attachments"))
             self.sessions.save(session)
             return OutboundMessage(channel=channel, chat_id=chat_id,
                                   content=final_content or "Background task completed.")
@@ -467,7 +467,7 @@ class AgentLoop:
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
 
-        self._save_turn(session, all_msgs, 1 + len(history))
+        self._save_turn(session, all_msgs, 1 + len(history), msg.metadata.get("attachments"))
         self.sessions.save(session)
 
         if (mt := self.tools.get("message")) and isinstance(mt, MessageTool) and mt._sent_in_turn:
@@ -480,7 +480,13 @@ class AgentLoop:
             metadata=msg.metadata or {},
         )
 
-    def _save_turn(self, session: Session, messages: list[dict], skip: int) -> None:
+    def _save_turn(
+        self,
+        session: Session,
+        messages: list[dict],
+        skip: int,
+        user_attachments: list[dict[str, Any]] | None = None,
+    ) -> None:
         """Save new-turn messages into session, truncating large tool results."""
         from datetime import datetime
         for m in messages[skip:]:
@@ -491,6 +497,9 @@ class AgentLoop:
             if role == "tool" and isinstance(content, str) and len(content) > self._TOOL_RESULT_MAX_CHARS:
                 entry["content"] = content[:self._TOOL_RESULT_MAX_CHARS] + "\n... (truncated)"
             elif role == "user":
+                if user_attachments:
+                    entry["attachments"] = user_attachments
+
                 if isinstance(content, str) and content.startswith(ContextBuilder._RUNTIME_CONTEXT_TAG):
                     # Strip the runtime-context prefix, keep only the user text.
                     parts = content.split("\n\n", 1)
@@ -498,19 +507,25 @@ class AgentLoop:
                         entry["content"] = parts[1]
                     else:
                         continue
+
                 if isinstance(content, list):
-                    filtered = []
+                    chunks: list[str] = []
                     for c in content:
-                        if c.get("type") == "text" and isinstance(c.get("text"), str) and c["text"].startswith(ContextBuilder._RUNTIME_CONTEXT_TAG):
-                            continue  # Strip runtime context from multimodal messages
+                        if not isinstance(c, dict):
+                            continue
+                        if c.get("type") == "text" and isinstance(c.get("text"), str):
+                            if c["text"].startswith(ContextBuilder._RUNTIME_CONTEXT_TAG):
+                                continue  # Strip runtime context from multimodal messages
+                            if c["text"].strip():
+                                chunks.append(c["text"])
+                            continue
                         if (c.get("type") == "image_url"
                                 and c.get("image_url", {}).get("url", "").startswith("data:image/")):
-                            filtered.append({"type": "text", "text": "[image]"})
-                        else:
-                            filtered.append(c)
-                    if not filtered:
+                            chunks.append("[image]")
+                    if not chunks:
                         continue
-                    entry["content"] = filtered
+                    # Persist as plain text for provider compatibility on history replays.
+                    entry["content"] = "\n".join(chunks)
             entry.setdefault("timestamp", datetime.now().isoformat())
             session.messages.append(entry)
         session.updated_at = datetime.now()
@@ -547,5 +562,6 @@ class AgentLoop:
             msg, session_key=session_key, on_progress=on_progress, on_event=on_event
         )
         return response.content if response else ""
+
 
 

@@ -1,4 +1,4 @@
-"""Session management for conversation history."""
+﻿"""Session management for conversation history."""
 
 import json
 import shutil
@@ -54,9 +54,30 @@ class Session:
                 sliced = sliced[i:]
                 break
 
+        def _sanitize_content(value: Any) -> Any:
+            if not isinstance(value, list):
+                return value
+
+            parts: list[str] = []
+            for item in value:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "text" and isinstance(item.get("text"), str):
+                    if item["text"].strip():
+                        parts.append(item["text"])
+                elif (item.get("type") == "image_url"
+                      and isinstance(item.get("image_url"), dict)
+                      and isinstance(item["image_url"].get("url"), str)):
+                    parts.append("[image]")
+
+            return "\n".join(parts) if parts else ""
+
         out: list[dict[str, Any]] = []
         for m in sliced:
-            entry: dict[str, Any] = {"role": m["role"], "content": m.get("content", "")}
+            entry: dict[str, Any] = {
+                "role": m["role"],
+                "content": _sanitize_content(m.get("content", "")),
+            }
             for k in ("tool_calls", "tool_call_id", "name"):
                 if k in m:
                     entry[k] = m[k]
@@ -183,6 +204,15 @@ class SessionManager:
         """Remove a session from the in-memory cache."""
         self._cache.pop(key, None)
 
+    def delete(self, key: str) -> bool:
+        """Delete a session from disk and cache."""
+        self._cache.pop(key, None)
+        path = self._get_session_path(key)
+        if not path.exists():
+            return False
+        path.unlink(missing_ok=True)
+        return True
+
     def list_sessions(self) -> list[dict[str, Any]]:
         """
         List all sessions.
@@ -211,3 +241,5 @@ class SessionManager:
                 continue
 
         return sorted(sessions, key=lambda x: x.get("updated_at", ""), reverse=True)
+
+
