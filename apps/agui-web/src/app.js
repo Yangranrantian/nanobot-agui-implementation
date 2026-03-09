@@ -14,6 +14,7 @@ const state = {
   previewArtifactId: null,
   connectionStatus: 'offline',
   runState: 'idle',
+  activeTaskCount: 0,
   lastEventAt: null,
   isSending: false,
   isUploading: false,
@@ -426,7 +427,7 @@ function connectEventStream(sessionId) {
   state.eventSource = source;
   setConnectionStatus('online');
 
-  ['run.started', 'message.started', 'message.delta', 'message.completed', 'tool.started', 'tool.completed', 'tool.failed', 'interrupt.requested', 'interrupt.resolved', 'error'].forEach(name => {
+  ['run.started', 'message.started', 'message.delta', 'message.completed', 'tool.started', 'tool.completed', 'tool.failed', 'task.started', 'task.updated', 'task.completed', 'task.failed', 'interrupt.requested', 'interrupt.resolved', 'error'].forEach(name => {
     source.addEventListener(name, event => {
       setConnectionStatus('online');
       state.lastEventAt = Date.now();
@@ -479,6 +480,18 @@ function handleEvent(event) {
     case 'tool.failed':
       upsertToolEvent(event);
       renderTranscript();
+      break;
+
+    case 'task.started':
+    case 'task.updated':
+      state.activeTaskCount += 1;
+      renderRightPane();
+      break;
+
+    case 'task.completed':
+    case 'task.failed':
+      state.activeTaskCount = Math.max(0, state.activeTaskCount - 1);
+      renderRightPane();
       break;
 
     case 'interrupt.resolved':
@@ -970,6 +983,7 @@ function renderRightPane() {
     <div class="pane-block">
       <div class="pane-section-title">Status</div>
       <div>Run: ${state.runState}</div>
+      <div>Active tasks: ${state.activeTaskCount}</div>
       <div>Pending interrupt: ${state.pendingInterrupt ? 'yes' : 'no'}</div>
     </div>
   `;

@@ -169,3 +169,12 @@ def test_agui_web_renders_inline_hitl_cards_and_result_summary():
     assert "interrupt.resultSummary" in app_js
     assert "state.interrupts = state.interrupts.map(" in app_js
     assert ".inline-hitl" in styles
+
+
+def test_agui_web_projects_task_events_into_inspector_status():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+
+    assert "case 'task.started':" in app_js
+    assert "case 'task.completed':" in app_js
+    assert "activeTaskCount" in app_js

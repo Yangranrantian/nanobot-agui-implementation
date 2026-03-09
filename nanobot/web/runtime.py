@@ -23,6 +23,21 @@ from .models import (
 )
 
 
+def project_status_from_events(events: list[dict]) -> dict:
+    active: set[str] = set()
+    for event in events:
+        payload = event.get("payload", {})
+        task_id = payload.get("task_id")
+        if not task_id:
+            continue
+        event_type = str(event.get("type") or "")
+        if event_type in {"task.started", "task.updated"}:
+            active.add(task_id)
+        elif event_type in {"task.completed", "task.failed"}:
+            active.discard(task_id)
+    return {"active_task_count": len(active)}
+
+
 class WebRuntime:
     """Thin adapter that exposes browser-facing session operations."""
 
