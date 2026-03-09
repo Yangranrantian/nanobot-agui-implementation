@@ -80,5 +80,12 @@ def create_app(*, runtime: WebRuntime | None = None, workspace: Path | None = No
             raise HTTPException(status_code=404, detail="File not found")
         return FileResponse(path=target)
 
+    @app.get("/artifacts/{artifact_id}")
+    async def get_artifact_preview(artifact_id: str):
+        try:
+            return app.state.runtime.get_artifact_preview(artifact_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Artifact not found") from exc
+
     return app
 

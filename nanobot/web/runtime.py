@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from nanobot.session.manager import Session, SessionManager
 
+from .artifacts import resolve_artifact_preview
 from .events import make_event
 from .files import FileStore
 from .interrupts import InterruptEnvelope, InterruptRequest, InterruptResolvedResponse, InterruptResponse
@@ -50,6 +51,7 @@ class WebRuntime:
         self.provider_name = provider_name
         self._event_queues: dict[str, asyncio.Queue[dict]] = {}
         self._pending_interrupts: dict[str, tuple[str, asyncio.Future[InterruptResponse], InterruptEnvelope]] = {}
+        self._artifacts: dict[str, Artifact] = {}
         self.files = FileStore(self.workspace / "web_uploads")
         if agent_loop is not None:
             self.attach_agent_loop(agent_loop)
@@ -337,9 +339,16 @@ class WebRuntime:
     async def save_upload(self, upload, session_id: str | None = None) -> FileUploadResponse:
         saved = await self.files.save(upload)
         artifact = self.to_uploaded_artifact(saved.model_dump())
+        self._artifacts[artifact.artifact_id] = artifact
         if session_id:
             await self._emit_artifact_created(session_id, artifact)
         return FileUploadResponse(**saved.model_dump(), artifact=artifact)
+
+    def get_artifact_preview(self, artifact_id: str) -> dict:
+        artifact = self._artifacts.get(artifact_id)
+        if artifact is None:
+            raise KeyError(artifact_id)
+        return resolve_artifact_preview(artifact)
 
     def _ensure_event_queue(self, session_id: str) -> asyncio.Queue[dict]:
         if session_id not in self._event_queues:
