@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 from unittest.mock import MagicMock
 
 import pytest
@@ -255,6 +255,21 @@ async def test_web_runtime_reports_actionable_error_for_zhipu_local_image_upload
 
     assert error_event is not None
     assert "size <= 5MB" in error_event.get("message", "")
+
+
+def test_interrupt_request_supports_single_select_form_and_artifact_context():
+    request = InterruptRequest(
+        kind="single_select",
+        prompt="Pick one option",
+        options=[{"id": "a", "label": "Option A"}],
+        fields=[{"name": "reason", "type": "text"}],
+        description="Need your decision",
+        context_artifact_ids=["art_1"],
+    )
+
+    assert request.kind == "single_select"
+    assert request.description == "Need your decision"
+    assert request.context_artifact_ids == ["art_1"]
 
 
 

@@ -8,8 +8,10 @@ from pydantic import BaseModel, Field
 class InterruptRequest(BaseModel):
     kind: str
     prompt: str
+    description: str | None = None
     options: list[dict[str, Any]] = Field(default_factory=list)
     fields: list[dict[str, Any]] = Field(default_factory=list)
+    context_artifact_ids: list[str] = Field(default_factory=list)
 
 
 class InterruptEnvelope(InterruptRequest):

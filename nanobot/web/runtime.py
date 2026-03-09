@@ -251,7 +251,10 @@ class WebRuntime:
                 channel="web",
                 chat_id=session_id,
                 media=media_paths,
-                metadata={"attachments": self._normalize_runtime_attachments(attachments)},
+                metadata={
+                    "attachments": attachments,
+                    "runtime_attachments": self._normalize_runtime_attachments(attachments),
+                },
                 on_event=lambda event: self.publish_event(session_id, {**event, "run_id": event.get("run_id", run_id)}),
             )
         except Exception as exc:

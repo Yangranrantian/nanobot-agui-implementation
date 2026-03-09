@@ -28,6 +28,13 @@ class MessageRecord(BaseModel):
     attachments: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class InterruptCardState(BaseModel):
+    interrupt_id: str
+    kind: str
+    state: str = "pending"
+    result_summary: str | None = None
+
+
 class MessageListResponse(BaseModel):
     items: list[MessageRecord]
 

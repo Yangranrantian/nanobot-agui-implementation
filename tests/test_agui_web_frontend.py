@@ -156,3 +156,16 @@ def test_agui_web_supports_mermaid_inline_render_and_copy_source():
     assert "Copy Source" in app_js
     assert "mermaid-preview-mode" in app_js
     assert ".mermaid-artifact" in styles
+
+
+def test_agui_web_renders_inline_hitl_cards_and_result_summary():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+    styles = (root / "src" / "styles.css").read_text(encoding="utf-8")
+
+    assert "interrupt-card inline-hitl" in app_js
+    assert "interrupt.kind === 'single_select'" in app_js
+    assert "interrupt.kind === 'form'" in app_js
+    assert "interrupt.resultSummary" in app_js
+    assert "state.interrupts = state.interrupts.map(" in app_js
+    assert ".inline-hitl" in styles

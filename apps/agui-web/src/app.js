@@ -482,10 +482,16 @@ function handleEvent(event) {
       break;
 
     case 'interrupt.resolved':
-      state.interrupts = state.interrupts.filter(item => item.interrupt_id !== event.interrupt_id);
-      if (state.pendingInterrupt && state.pendingInterrupt.interrupt_id === event.interrupt_id) {
-        state.pendingInterrupt = null;
-      }
+      state.interrupts = state.interrupts.map(item => (
+        item.interrupt_id === event.interrupt_id
+          ? {
+              ...item,
+              status: 'resolved',
+              resultSummary: `Resolved: ${String(event.value ?? 'submitted')}`,
+            }
+          : item
+      ));
+      state.pendingInterrupt = state.interrupts.find(item => item.status !== 'resolved') || null;
       renderInterrupts();
       renderRightPane();
       break;
@@ -818,8 +824,22 @@ function renderInterrupts() {
 
   for (const interrupt of state.interrupts) {
     const card = document.createElement('div');
-    card.className = 'interrupt-card';
+    card.className = 'interrupt-card inline-hitl';
     card.innerHTML = `<strong>${interrupt.kind}</strong><div>${interrupt.prompt}</div>`;
+    if (interrupt.description) {
+      const desc = document.createElement('div');
+      desc.className = 'interrupt-desc';
+      desc.textContent = interrupt.description;
+      card.appendChild(desc);
+    }
+    if (interrupt.resultSummary) {
+      const summary = document.createElement('div');
+      summary.className = 'interrupt-result';
+      summary.textContent = interrupt.resultSummary;
+      card.appendChild(summary);
+      ui.interrupts.appendChild(card);
+      continue;
+    }
 
     if (interrupt.kind === 'confirm') {
       const row = document.createElement('div');
@@ -840,6 +860,34 @@ function renderInterrupts() {
       });
 
       row.append(approve, reject);
+      card.appendChild(row);
+    }
+
+    if (interrupt.kind === 'single_select') {
+      const row = document.createElement('div');
+      row.className = 'composer-actions';
+      for (const option of interrupt.options || []) {
+        const choose = document.createElement('button');
+        choose.className = 'btn ghost';
+        choose.textContent = option.label || option.id || 'Choose';
+        choose.addEventListener('click', () => {
+          void respondInterrupt(interrupt, option.id ?? option.value ?? option.label ?? true);
+        });
+        row.appendChild(choose);
+      }
+      card.appendChild(row);
+    }
+
+    if (interrupt.kind === 'form') {
+      const row = document.createElement('div');
+      row.className = 'composer-actions';
+      const submit = document.createElement('button');
+      submit.className = 'btn primary';
+      submit.textContent = 'Submit form';
+      submit.addEventListener('click', () => {
+        void respondInterrupt(interrupt, { submitted: true });
+      });
+      row.appendChild(submit);
       card.appendChild(row);
     }
 
@@ -934,14 +982,32 @@ function renderRightPane() {
 }
 
 async function respondInterrupt(interrupt, value) {
+  state.interrupts = state.interrupts.map(item => (
+    item.interrupt_id === interrupt.interrupt_id
+      ? { ...item, status: 'submitting' }
+      : item
+  ));
+  renderInterrupts();
   try {
     await request(`/sessions/${interrupt.session_id}/interrupts/${interrupt.interrupt_id}/respond`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ kind: interrupt.kind, value }),
     });
+    state.interrupts = state.interrupts.map(item => (
+      item.interrupt_id === interrupt.interrupt_id
+        ? { ...item, status: 'resolved', resultSummary: `Resolved: ${String(value)}` }
+        : item
+    ));
+    renderInterrupts();
   } catch (error) {
+    state.interrupts = state.interrupts.map(item => (
+      item.interrupt_id === interrupt.interrupt_id
+        ? { ...item, status: 'pending' }
+        : item
+    ));
     renderSystemMessage(`Interrupt response failed: ${error.message}`);
+    renderInterrupts();
   }
 }
 
