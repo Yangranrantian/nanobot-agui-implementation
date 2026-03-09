@@ -219,6 +219,19 @@ nanobot gateway
 
 </details>
 
+## 🧭 AGUI Codex-Style Workspace (Experimental)
+
+The AGUI web client on `codex/agui-implementation` has been upgraded from MVP chat to a Codex-style workspace model:
+
+- **Event Model v2** families: `message.*`, `tool.*`, `artifact.*`, `task.*`, `interrupt.*`, `error`
+- **Artifact model** supports: `file`, `code`, `image`, `link`, `diagram`, `report`
+- **Right pane dual-state**: `Inspector` (default) or `Preview` (when artifact selected)
+- **Upload semantics**: images keep multimodal pathing, non-image uploads default to path-first runtime semantics
+- **Mermaid behavior**: inline transcript block, `Copy Source`, and preview rendered/source modes
+- **HITL behavior**: inline interrupt cards (`confirm`, `single_select`, `form`) with result summary state after submit
+
+For local AGUI runtime details and test commands, see `docs/agui-local-dev.md`.
+
 <details>
 <summary><b>Mochat (Claw IM)</b></summary>
 
