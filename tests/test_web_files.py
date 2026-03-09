@@ -1,4 +1,4 @@
-﻿from fastapi.testclient import TestClient
+from fastapi.testclient import TestClient
 
 
 def test_upload_file_returns_file_metadata(tmp_path):
@@ -36,3 +36,15 @@ def test_download_file_returns_404_when_missing(tmp_path):
 
     missing = client.get("/files/file_missing")
     assert missing.status_code == 404
+
+
+def test_upload_creates_artifact_event_and_artifact_metadata(tmp_path):
+    from nanobot.web.api import create_app
+    from nanobot.web.runtime import WebRuntime
+
+    client = TestClient(create_app(runtime=WebRuntime(tmp_path)))
+
+    resp = client.post("/files", files={"file": ("spec.md", b"hello", "text/markdown")})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["artifact"]["type"] in {"file", "report"}

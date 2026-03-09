@@ -1,8 +1,8 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
@@ -70,8 +70,8 @@ def create_app(*, runtime: WebRuntime | None = None, workspace: Path | None = No
         return await app.state.runtime.respond_interrupt(session_id, interrupt_id, payload)
 
     @app.post("/files", response_model=FileUploadResponse)
-    async def upload_file(file: UploadFile = File(...)) -> FileUploadResponse:
-        return await app.state.runtime.save_upload(file)
+    async def upload_file(file: UploadFile = File(...), session_id: str | None = Query(default=None)) -> FileUploadResponse:
+        return await app.state.runtime.save_upload(file, session_id=session_id)
 
     @app.get("/files/{file_id}")
     async def get_file(file_id: str):

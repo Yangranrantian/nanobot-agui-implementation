@@ -49,6 +49,7 @@ class FileUploadResponse(BaseModel):
     mime_type: str
     size_bytes: int
     path: str
+    artifact: "Artifact | None" = None
 
 
 class AgentEvent(BaseModel):

@@ -311,14 +311,12 @@ class WebRuntime:
     ) -> InterruptResolvedResponse:
         return await self.resolve_interrupt(session_id, interrupt_id, response)
 
-    async def save_upload(self, upload) -> FileUploadResponse:
-        saved = await self.files.save(upload)
-        return FileUploadResponse(**saved.model_dump())
-
     @staticmethod
     def to_uploaded_artifact(file_info: dict) -> Artifact:
         mime_type = str(file_info.get("mime_type") or "")
         artifact_type = "image" if mime_type.startswith("image/") else "file"
+        if mime_type in {"text/markdown", "text/x-markdown"}:
+            artifact_type = "report"
         return Artifact(
             artifact_id=str(file_info.get("file_id") or ""),
             type=artifact_type,
@@ -329,6 +327,19 @@ class WebRuntime:
             preview_text=file_info.get("filename"),
             metadata={"size_bytes": file_info.get("size_bytes")},
         )
+
+    async def _emit_artifact_created(self, session_id: str, artifact: Artifact) -> None:
+        await self.publish_event(
+            session_id,
+            make_event("artifact.created", session_id=session_id, artifact=artifact.model_dump()),
+        )
+
+    async def save_upload(self, upload, session_id: str | None = None) -> FileUploadResponse:
+        saved = await self.files.save(upload)
+        artifact = self.to_uploaded_artifact(saved.model_dump())
+        if session_id:
+            await self._emit_artifact_created(session_id, artifact)
+        return FileUploadResponse(**saved.model_dump(), artifact=artifact)
 
     def _ensure_event_queue(self, session_id: str) -> asyncio.Queue[dict]:
         if session_id not in self._event_queues:
