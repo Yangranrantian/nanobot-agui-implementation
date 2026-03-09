@@ -166,6 +166,14 @@ def mock_agent_runtime(tmp_path):
         }
 
 
+def test_web_command_is_registered():
+    result = runner.invoke(app, ["web", "--help"])
+
+    assert result.exit_code == 0
+    assert "--port" in result.stdout
+    assert "--host" in result.stdout
+
+
 def test_agent_help_shows_workspace_and_config_options():
     result = runner.invoke(app, ["agent", "--help"])
 

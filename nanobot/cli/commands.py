@@ -471,6 +471,60 @@ def gateway(
 
 
 # ============================================================================
+# Web Runtime
+# ============================================================================
+
+
+@app.command()
+def web(
+    host: str = typer.Option("127.0.0.1", "--host", help="Web runtime host"),
+    port: int = typer.Option(8000, "--port", help="Web runtime port"),
+    workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
+    config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
+):
+    """Start the AGUI-compatible web runtime."""
+    import uvicorn
+
+    from nanobot.agent.loop import AgentLoop
+    from nanobot.bus.queue import MessageBus
+    from nanobot.config.paths import get_cron_dir
+    from nanobot.cron.service import CronService
+    from nanobot.web.api import create_app
+    from nanobot.web.runtime import WebRuntime
+
+    loaded = _load_runtime_config(config, workspace)
+    sync_workspace_templates(loaded.workspace_path)
+
+    bus = MessageBus()
+    provider = _make_provider(loaded)
+    cron_store_path = get_cron_dir() / "jobs.json"
+    cron = CronService(cron_store_path)
+    agent_loop = AgentLoop(
+        bus=bus,
+        provider=provider,
+        workspace=loaded.workspace_path,
+        model=loaded.agents.defaults.model,
+        temperature=loaded.agents.defaults.temperature,
+        max_tokens=loaded.agents.defaults.max_tokens,
+        max_iterations=loaded.agents.defaults.max_tool_iterations,
+        memory_window=loaded.agents.defaults.memory_window,
+        reasoning_effort=loaded.agents.defaults.reasoning_effort,
+        brave_api_key=loaded.tools.web.search.api_key or None,
+        web_proxy=loaded.tools.web.proxy or None,
+        exec_config=loaded.tools.exec,
+        cron_service=cron,
+        restrict_to_workspace=loaded.tools.restrict_to_workspace,
+        mcp_servers=loaded.tools.mcp_servers,
+        channels_config=loaded.channels,
+    )
+    runtime = WebRuntime(loaded.workspace_path, agent_loop=agent_loop)
+    app = create_app(runtime=runtime)
+
+    console.print(f"{__logo__} Starting nanobot web runtime on http://{host}:{port} ...")
+    uvicorn.run(app, host=host, port=port)
+
+
+# ============================================================================
 # Agent Commands
 # ============================================================================
 

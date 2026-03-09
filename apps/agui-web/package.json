@@ -1,0 +1,10 @@
+{
+  "name": "agui-web",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Static AGUI web client for nanobot",
+  "scripts": {
+    "start": "python serve.py --host 127.0.0.1 --port 4173",
+    "test": "python -m pytest ../../tests/test_agui_web_frontend.py -q"
+  }
+}

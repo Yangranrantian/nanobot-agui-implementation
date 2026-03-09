@@ -1,0 +1,69 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from fastapi import FastAPI, File, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+
+from .events import encode_sse
+from .interrupts import InterruptResolvedResponse, InterruptResponse
+from .models import (
+    CreateSessionRequest,
+    FileUploadResponse,
+    MessageListResponse,
+    RunAcceptedResponse,
+    SendMessageRequest,
+    SessionListResponse,
+    SessionSummary,
+)
+from .runtime import WebRuntime
+
+
+def create_app(*, runtime: WebRuntime | None = None, workspace: Path | None = None) -> FastAPI:
+    app = FastAPI(title="nanobot web runtime")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=['*'],
+        allow_methods=['*'],
+        allow_headers=['*'],
+    )
+    app.state.runtime = runtime or WebRuntime(workspace or Path.cwd())
+
+    @app.post("/sessions", response_model=SessionSummary)
+    def create_session(_payload: CreateSessionRequest) -> SessionSummary:
+        return app.state.runtime.create_session()
+
+    @app.get("/sessions", response_model=SessionListResponse)
+    def list_sessions() -> SessionListResponse:
+        return app.state.runtime.list_sessions()
+
+    @app.get("/sessions/{session_id}/messages", response_model=MessageListResponse)
+    def get_session_messages(session_id: str) -> MessageListResponse:
+        return app.state.runtime.get_messages(session_id)
+
+    @app.post("/sessions/{session_id}/messages", response_model=RunAcceptedResponse, status_code=202)
+    async def send_message(session_id: str, payload: SendMessageRequest) -> RunAcceptedResponse:
+        return await app.state.runtime.dispatch_message(
+            session_id,
+            payload.content,
+            payload.attachments,
+        )
+
+    @app.get("/sessions/{session_id}/events")
+    async def stream_session_events(session_id: str) -> StreamingResponse:
+        async def _stream():
+            async for event in app.state.runtime.stream_session_events(session_id):
+                yield encode_sse(event)
+
+        return StreamingResponse(_stream(), media_type="text/event-stream")
+
+    @app.post("/sessions/{session_id}/interrupts/{interrupt_id}/respond", response_model=InterruptResolvedResponse)
+    async def respond_interrupt(session_id: str, interrupt_id: str, payload: InterruptResponse) -> InterruptResolvedResponse:
+        return await app.state.runtime.respond_interrupt(session_id, interrupt_id, payload)
+
+    @app.post("/files", response_model=FileUploadResponse)
+    async def upload_file(file: UploadFile = File(...)) -> FileUploadResponse:
+        return await app.state.runtime.save_upload(file)
+
+    return app

@@ -1,0 +1,69 @@
+﻿from pathlib import Path
+
+
+def test_agui_web_shell_exists_and_targets_session_api():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+
+    index_html = (root / "index.html").read_text(encoding="utf-8")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="app"' in index_html
+    assert "createSession" in app_js
+    assert '"/sessions"' in app_js or "'/sessions'" in app_js
+
+
+def test_agui_web_bootstrap_is_resilient_to_storage_failures():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+
+    assert "function readStoredApiBase()" in app_js
+    assert "function renderFatalError(error)" in app_js
+    assert "try {\n  bootstrap();\n} catch (error) {" in app_js
+
+
+
+def test_agui_web_uses_custom_static_server_for_js_mime():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    package_json = (root / "package.json").read_text(encoding="utf-8")
+    serve_py = (root / "serve.py").read_text(encoding="utf-8")
+
+    assert "python serve.py --host 127.0.0.1 --port 4173" in package_json
+    assert "'.js': 'text/javascript; charset=utf-8'" in serve_py
+
+
+def test_agui_web_enter_sends_and_completion_sync():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+
+    assert "event.key === 'Enter' && !event.shiftKey" in app_js
+    assert "void syncHistoryAfterCompletion(state.currentSessionId)" in app_js
+
+
+def test_agui_web_status_visibility_controls():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+
+    assert "connection-chip" in app_js
+    assert "setRunState('running')" in app_js
+    assert "setSending(true)" in app_js
+
+
+def test_agui_web_attachment_upload_and_send_state_feedback():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+
+    assert "file-status" in app_js
+    assert "state.fileStatus = `Uploading ${files.length} file(s)...`" in app_js
+    assert "state.attachments = [];" in app_js
+    assert "attachments: sentAttachments" in app_js
+
+
+
+def test_agui_web_multimodal_history_rendering_is_human_readable():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+    styles = (root / "src" / "styles.css").read_text(encoding="utf-8")
+
+    assert "function normalizeMessageContent(content)" in app_js
+    assert "item.type === 'image_url'" in app_js
+    assert "#file-input" in styles

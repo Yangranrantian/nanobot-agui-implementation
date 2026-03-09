@@ -1,4 +1,4 @@
-"""Agent loop: the core processing engine."""
+﻿"""Agent loop: the core processing engine."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import weakref
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from uuid import uuid4
 
 from loguru import logger
 
@@ -26,6 +27,7 @@ from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
 from nanobot.session.manager import Session, SessionManager
+from nanobot.web.events import emit_event, make_event
 
 if TYPE_CHECKING:
     from nanobot.config.schema import ChannelsConfig, ExecToolConfig
@@ -110,6 +112,7 @@ class AgentLoop:
         self._consolidation_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
         self._active_tasks: dict[str, list[asyncio.Task]] = {}  # session_key -> tasks
         self._processing_lock = asyncio.Lock()
+        self._interrupt_handler: Callable[[str, Any, Callable[[dict[str, Any]], Awaitable[None] | None] | None], Awaitable[Any]] | None = None
         self._register_default_tools()
 
     def _register_default_tools(self) -> None:
@@ -161,7 +164,7 @@ class AgentLoop:
 
     @staticmethod
     def _strip_think(text: str | None) -> str | None:
-        """Remove <think>…</think> blocks that some models embed in content."""
+        """Remove <think>鈥?/think> blocks that some models embed in content."""
         if not text:
             return None
         return re.sub(r"<think>[\s\S]*?</think>", "", text).strip() or None
@@ -174,13 +177,14 @@ class AgentLoop:
             val = next(iter(args.values()), None) if isinstance(args, dict) else None
             if not isinstance(val, str):
                 return tc.name
-            return f'{tc.name}("{val[:40]}…")' if len(val) > 40 else f'{tc.name}("{val}")'
+            return f'{tc.name}("{val[:40]}鈥?)' if len(val) > 40 else f'{tc.name}("{val}")'
         return ", ".join(_fmt(tc) for tc in tool_calls)
 
     async def _run_agent_loop(
         self,
         initial_messages: list[dict],
         on_progress: Callable[..., Awaitable[None]] | None = None,
+        on_event: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
     ) -> tuple[str | None, list[str], list[dict]]:
         """Run the agent iteration loop. Returns (final_content, tools_used, messages)."""
         messages = initial_messages
@@ -205,7 +209,10 @@ class AgentLoop:
                     thought = self._strip_think(response.content)
                     if thought:
                         await on_progress(thought)
-                    await on_progress(self._tool_hint(response.tool_calls), tool_hint=True)
+                        await emit_event(on_event, make_event("message.delta", content=thought, tool_hint=False))
+                    tool_hint = self._tool_hint(response.tool_calls)
+                    await on_progress(tool_hint, tool_hint=True)
+                    await emit_event(on_event, make_event("message.delta", content=tool_hint, tool_hint=True))
 
                 tool_call_dicts = [
                     {
@@ -234,17 +241,19 @@ class AgentLoop:
                     )
             else:
                 clean = self._strip_think(response.content)
-                # Don't persist error responses to session history — they can
+                # Don't persist error responses to session history 鈥?they can
                 # poison the context and cause permanent 400 loops (#1303).
                 if response.finish_reason == "error":
                     logger.error("LLM returned error: {}", (clean or "")[:200])
                     final_content = clean or "Sorry, I encountered an error calling the AI model."
+                    await emit_event(on_event, make_event("error", message=final_content))
                     break
                 messages = self.context.add_assistant_message(
                     messages, clean, reasoning_content=response.reasoning_content,
                     thinking_blocks=response.thinking_blocks,
                 )
                 final_content = clean
+                await emit_event(on_event, make_event("message.completed", content=clean or ""))
                 break
 
         if final_content is None and iteration >= self.max_iterations:
@@ -286,7 +295,7 @@ class AgentLoop:
                 pass
         sub_cancelled = await self.subagents.cancel_by_session(msg.session_key)
         total = cancelled + sub_cancelled
-        content = f"⏹ Stopped {total} task(s)." if total else "No active task to stop."
+        content = f"鈴?Stopped {total} task(s)." if total else "No active task to stop."
         await self.bus.publish_outbound(OutboundMessage(
             channel=msg.channel, chat_id=msg.chat_id, content=content,
         ))
@@ -327,11 +336,27 @@ class AgentLoop:
         self._running = False
         logger.info("Agent loop stopping")
 
+    def set_interrupt_handler(self, handler) -> None:
+        """Register a runtime-backed interrupt handler."""
+        self._interrupt_handler = handler
+
+    async def request_interrupt(
+        self,
+        session_key: str,
+        request: Any,
+        on_event: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
+    ):
+        """Suspend execution until the runtime resolves a user interrupt."""
+        if self._interrupt_handler is None:
+            raise RuntimeError("Interrupt handling is not configured")
+        return await self._interrupt_handler(session_key, request, on_event)
+
     async def _process_message(
         self,
         msg: InboundMessage,
         session_key: str | None = None,
         on_progress: Callable[[str], Awaitable[None]] | None = None,
+        on_event: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
     ) -> OutboundMessage | None:
         """Process a single inbound message and return the response."""
         # System messages: parse origin from chat_id ("channel:chat_id")
@@ -358,6 +383,9 @@ class AgentLoop:
 
         key = session_key or msg.session_key
         session = self.sessions.get_or_create(key)
+        run_id = f"run_{uuid4().hex[:12]}"
+        await emit_event(on_event, make_event("run.started", run_id=run_id, session_key=key, channel=msg.channel, chat_id=msg.chat_id))
+        await emit_event(on_event, make_event("message.started", run_id=run_id, session_key=key, role="assistant"))
 
         # Slash commands
         cmd = msg.content.strip().lower()
@@ -391,7 +419,7 @@ class AgentLoop:
                                   content="New session started.")
         if cmd == "/help":
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
-                                  content="🐈 nanobot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/help — Show available commands")
+                                  content="馃悎 nanobot commands:\n/new 鈥?Start a new conversation\n/stop 鈥?Stop the current task\n/help 鈥?Show available commands")
 
         unconsolidated = len(session.messages) - session.last_consolidated
         if (unconsolidated >= self.memory_window and session.key not in self._consolidating):
@@ -433,7 +461,7 @@ class AgentLoop:
             ))
 
         final_content, _, all_msgs = await self._run_agent_loop(
-            initial_messages, on_progress=on_progress or _bus_progress,
+            initial_messages, on_progress=on_progress or _bus_progress, on_event=on_event,
         )
 
         if final_content is None:
@@ -459,7 +487,7 @@ class AgentLoop:
             entry = dict(m)
             role, content = entry.get("role"), entry.get("content")
             if role == "assistant" and not content and not entry.get("tool_calls"):
-                continue  # skip empty assistant messages — they poison session context
+                continue  # skip empty assistant messages 鈥?they poison session context
             if role == "tool" and isinstance(content, str) and len(content) > self._TOOL_RESULT_MAX_CHARS:
                 entry["content"] = content[:self._TOOL_RESULT_MAX_CHARS] + "\n... (truncated)"
             elif role == "user":
@@ -501,9 +529,23 @@ class AgentLoop:
         channel: str = "cli",
         chat_id: str = "direct",
         on_progress: Callable[[str], Awaitable[None]] | None = None,
+        on_event: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
+        media: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         """Process a message directly (for CLI or cron usage)."""
         await self._connect_mcp()
-        msg = InboundMessage(channel=channel, sender_id="user", chat_id=chat_id, content=content)
-        response = await self._process_message(msg, session_key=session_key, on_progress=on_progress)
+        msg = InboundMessage(
+            channel=channel,
+            sender_id="user",
+            chat_id=chat_id,
+            content=content,
+            media=media or [],
+            metadata=metadata or {},
+        )
+        response = await self._process_message(
+            msg, session_key=session_key, on_progress=on_progress, on_event=on_event
+        )
         return response.content if response else ""
+
+

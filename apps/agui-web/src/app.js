@@ -1,0 +1,614 @@
+﻿const state = {
+  apiBase: readStoredApiBase(),
+  sessions: [],
+  currentSessionId: null,
+  messages: [],
+  interrupts: [],
+  eventSource: null,
+  pendingAssistantId: null,
+  attachments: [],
+  connectionStatus: 'offline',
+  runState: 'idle',
+  lastEventAt: null,
+  isSending: false,
+  isUploading: false,
+  fileStatus: 'No files selected',
+};
+
+const app = document.getElementById('app');
+let ui;
+
+function readStoredApiBase() {
+  try {
+    return localStorage.getItem('nanobot.agui.base') || 'http://127.0.0.1:8000';
+  } catch {
+    return 'http://127.0.0.1:8000';
+  }
+}
+
+function persistApiBase(value) {
+  try {
+    localStorage.setItem('nanobot.agui.base', value);
+  } catch {
+    // Best-effort only.
+  }
+}
+
+function renderFatalError(error) {
+  if (!app) {
+    return;
+  }
+  app.innerHTML = `
+    <div class="app-shell fatal-shell">
+      <section class="chat-panel fatal-panel">
+        <h1>nanobot webchat</h1>
+        <p class="fatal-text">${String(error && error.message ? error.message : error)}</p>
+      </section>
+    </div>
+  `;
+}
+
+function renderAppShell() {
+  if (!app) {
+    throw new Error('Missing #app mount element');
+  }
+
+  app.innerHTML = `
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-kicker">Nanobot AGUI</div>
+          <h1>Webchat</h1>
+        </div>
+
+        <div class="api-config">
+          <label for="api-base">Backend</label>
+          <div class="api-row">
+            <input id="api-base" value="${state.apiBase}" />
+            <button id="save-base" class="btn ghost">Save</button>
+          </div>
+        </div>
+
+        <button id="new-session" class="btn primary">New chat</button>
+
+        <div class="sessions-head">Sessions</div>
+        <div id="session-list" class="session-list"></div>
+      </aside>
+
+      <main class="chat-panel">
+        <header class="chat-header">
+          <div class="chat-title-wrap">
+            <div class="chat-kicker">Current session</div>
+            <h2 id="session-title">No session selected</h2>
+          </div>
+          <div class="status-bar">
+            <span id="connection-chip" class="chip">Offline</span>
+            <span id="run-chip" class="chip">Idle</span>
+            <span id="last-event" class="chip muted">No events yet</span>
+          </div>
+        </header>
+
+        <section id="transcript" class="transcript">
+          <div class="empty">Create or select a session to start.</div>
+        </section>
+
+        <section class="composer-wrap">
+          <div id="interrupts" class="interrupts"></div>
+          <div id="attachments" class="attachments"></div>
+          <textarea id="composer" placeholder="Send a message... Enter to send, Shift+Enter for new line"></textarea>
+          <div class="composer-actions">
+            <input id="file-input" type="file" multiple />
+            <label for="file-input" id="file-picker" class="btn ghost file-picker">Choose files</label>
+            <span id="file-status" class="file-status">No files selected</span>
+            <button id="send-message" class="btn primary">Send</button>
+          </div>
+        </section>
+      </main>
+    </div>
+  `;
+}
+
+function getUi() {
+  return {
+    apiBase: document.getElementById('api-base'),
+    saveBase: document.getElementById('save-base'),
+    newSession: document.getElementById('new-session'),
+    sessionList: document.getElementById('session-list'),
+    sessionTitle: document.getElementById('session-title'),
+    transcript: document.getElementById('transcript'),
+    interrupts: document.getElementById('interrupts'),
+    attachments: document.getElementById('attachments'),
+    composer: document.getElementById('composer'),
+    sendMessage: document.getElementById('send-message'),
+    fileInput: document.getElementById('file-input'),
+    fileStatus: document.getElementById('file-status'),
+    filePicker: document.getElementById('file-picker'),
+    connectionChip: document.getElementById('connection-chip'),
+    runChip: document.getElementById('run-chip'),
+    lastEvent: document.getElementById('last-event'),
+  };
+}
+
+function normalizeMessageContent(content) {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    const chunks = [];
+    for (const item of content) {
+      if (!item || typeof item !== 'object') {
+        continue;
+      }
+      if (item.type === 'text' && typeof item.text === 'string') {
+        chunks.push(item.text);
+      } else if (item.type === 'image_url') {
+        chunks.push('[image]');
+      }
+    }
+    return chunks.join('\n').trim() || '[attachment]';
+  }
+  if (content == null) {
+    return '';
+  }
+  return String(content);
+}
+
+function updateStatusBar() {
+  if (!ui) {
+    return;
+  }
+
+  ui.connectionChip.textContent = state.connectionStatus === 'online' ? 'Connected' : 'Disconnected';
+  ui.connectionChip.className = `chip ${state.connectionStatus === 'online' ? 'ok' : 'warn'}`;
+
+  const runLabel = state.runState === 'running'
+    ? 'Thinking...'
+    : state.isUploading
+      ? 'Uploading files...'
+      : state.isSending
+        ? 'Sending...'
+        : 'Idle';
+
+  ui.runChip.textContent = runLabel;
+  ui.runChip.className = `chip ${state.runState === 'running' || state.isSending || state.isUploading ? 'busy' : ''}`;
+  ui.lastEvent.textContent = state.lastEventAt
+    ? `Last event ${new Date(state.lastEventAt).toLocaleTimeString()}`
+    : 'No events yet';
+
+  ui.sendMessage.disabled = state.isSending || state.isUploading;
+  ui.sendMessage.textContent = state.isUploading ? 'Uploading...' : state.isSending ? 'Sending...' : 'Send';
+  ui.fileStatus.textContent = state.fileStatus;
+  ui.filePicker.classList.toggle('disabled', state.isUploading || state.isSending);
+}
+
+function setConnectionStatus(status) {
+  state.connectionStatus = status;
+  updateStatusBar();
+}
+
+function setRunState(nextState) {
+  state.runState = nextState;
+  state.lastEventAt = Date.now();
+  updateStatusBar();
+}
+
+function setSending(sending) {
+  state.isSending = sending;
+  updateStatusBar();
+}
+
+function setUploading(uploading) {
+  state.isUploading = uploading;
+  updateStatusBar();
+}
+
+async function request(path, options = {}) {
+  const response = await fetch(`${state.apiBase}${path}`, options);
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `${response.status} ${response.statusText}`);
+  }
+  return response.json();
+}
+
+function toUiMessages(items) {
+  return (items || []).map((item, index) => ({
+    id: `history-${index}`,
+    role: item.role === 'assistant' ? 'assistant' : 'user',
+    content: normalizeMessageContent(item.content),
+  }));
+}
+
+export async function createSession() {
+  return request('/sessions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+}
+
+async function refreshSessions(selectId = state.currentSessionId) {
+  try {
+    const data = await request('/sessions');
+    state.sessions = data.items || [];
+
+    if (selectId) {
+      state.currentSessionId = selectId;
+    } else if (!state.currentSessionId && state.sessions.length > 0) {
+      state.currentSessionId = state.sessions[0].session_id;
+    }
+
+    renderSessions();
+
+    if (state.currentSessionId) {
+      await selectSession(state.currentSessionId);
+    }
+  } catch (error) {
+    renderSystemMessage(`Failed to load sessions: ${error.message}`);
+    setConnectionStatus('offline');
+  }
+}
+
+function renderSessions() {
+  ui.sessionList.innerHTML = '';
+
+  if (state.sessions.length === 0) {
+    ui.sessionList.innerHTML = '<div class="empty">No sessions yet.</div>';
+    return;
+  }
+
+  for (const session of state.sessions) {
+    const button = document.createElement('button');
+    button.className = `session-item${session.session_id === state.currentSessionId ? ' active' : ''}`;
+    button.innerHTML = `<strong>${session.session_id}</strong><span>${session.updated_at || ''}</span>`;
+    button.addEventListener('click', () => {
+      void selectSession(session.session_id);
+    });
+    ui.sessionList.appendChild(button);
+  }
+}
+
+async function fetchAndRenderHistory(sessionId) {
+  const history = await request(`/sessions/${sessionId}/messages`);
+  state.messages = toUiMessages(history.items);
+  renderTranscript();
+}
+
+async function syncHistoryAfterCompletion(sessionId) {
+  const attempts = 10;
+  const delayMs = 350;
+
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      const history = await request(`/sessions/${sessionId}/messages`);
+      const mapped = toUiMessages(history.items);
+      if (mapped.length > 0) {
+        state.messages = mapped;
+        renderTranscript();
+      }
+
+      const last = mapped[mapped.length - 1];
+      const done = !!last && last.role === 'assistant' && String(last.content || '').trim().length > 0;
+      if (done) {
+        return;
+      }
+    } catch {
+      // retry
+    }
+
+    await new Promise(resolve => setTimeout(resolve, delayMs));
+  }
+}
+
+async function selectSession(sessionId) {
+  state.currentSessionId = sessionId;
+  state.pendingAssistantId = null;
+  state.interrupts = [];
+  renderSessions();
+  ui.sessionTitle.textContent = sessionId;
+
+  try {
+    await fetchAndRenderHistory(sessionId);
+    connectEventStream(sessionId);
+  } catch (error) {
+    renderSystemMessage(`Failed to load message history: ${error.message}`);
+    setConnectionStatus('offline');
+  }
+}
+
+function connectEventStream(sessionId) {
+  if (state.eventSource) {
+    state.eventSource.close();
+  }
+
+  const source = new EventSource(`${state.apiBase}/sessions/${sessionId}/events`);
+  state.eventSource = source;
+  setConnectionStatus('online');
+
+  ['run.started', 'message.started', 'message.delta', 'message.completed', 'interrupt.requested', 'interrupt.resolved', 'error'].forEach(name => {
+    source.addEventListener(name, event => {
+      setConnectionStatus('online');
+      state.lastEventAt = Date.now();
+      updateStatusBar();
+      handleEvent(JSON.parse(event.data));
+    });
+  });
+
+  source.onerror = () => {
+    setConnectionStatus('offline');
+    renderSystemMessage('Event stream disconnected.');
+  };
+}
+
+function handleEvent(event) {
+  switch (event.type) {
+    case 'run.started':
+      setRunState('running');
+      break;
+
+    case 'message.started':
+      setRunState('running');
+      state.pendingAssistantId = `assistant-${Date.now()}`;
+      state.messages.push({ id: state.pendingAssistantId, role: 'assistant', content: '...' });
+      renderTranscript();
+      break;
+
+    case 'message.delta':
+      appendAssistantChunk(event.content || '', false);
+      break;
+
+    case 'message.completed':
+      if (typeof event.content === 'string' && event.content.length > 0) {
+        appendAssistantChunk(event.content, true);
+      }
+      state.pendingAssistantId = null;
+      setRunState('idle');
+      if (state.currentSessionId) {
+        void syncHistoryAfterCompletion(state.currentSessionId);
+      }
+      break;
+
+    case 'interrupt.requested':
+      upsertInterrupt(event);
+      break;
+
+    case 'interrupt.resolved':
+      state.interrupts = state.interrupts.filter(item => item.interrupt_id !== event.interrupt_id);
+      renderInterrupts();
+      break;
+
+    case 'error':
+      setRunState('idle');
+      renderSystemMessage(`Error: ${event.message || 'unknown error'}`);
+      break;
+
+    default:
+      break;
+  }
+}
+
+function appendAssistantChunk(chunk, replace = false) {
+  let target = state.messages.find(message => message.id === state.pendingAssistantId);
+
+  if (!target) {
+    target = { id: `assistant-${Date.now()}`, role: 'assistant', content: '' };
+    state.messages.push(target);
+    state.pendingAssistantId = target.id;
+  }
+
+  target.content = replace ? chunk : `${target.content}${chunk}`;
+  renderTranscript();
+}
+
+function renderTranscript() {
+  ui.transcript.innerHTML = '';
+
+  if (state.messages.length === 0) {
+    ui.transcript.innerHTML = '<div class="empty">No messages yet.</div>';
+    return;
+  }
+
+  for (const message of state.messages) {
+    const div = document.createElement('div');
+    div.className = `message ${message.role}`;
+    div.textContent = message.content;
+    ui.transcript.appendChild(div);
+  }
+
+  ui.transcript.scrollTop = ui.transcript.scrollHeight;
+}
+
+function renderSystemMessage(text) {
+  state.messages.push({ id: `system-${Date.now()}`, role: 'system', content: text });
+  renderTranscript();
+}
+
+async function sendCurrentMessage() {
+  if (state.isSending || state.isUploading) {
+    return;
+  }
+
+  if (!state.currentSessionId) {
+    const session = await createSession();
+    await refreshSessions(session.session_id);
+  }
+
+  const content = ui.composer.value.trim();
+  if (!content) {
+    return;
+  }
+
+  state.messages.push({ id: `user-${Date.now()}`, role: 'user', content });
+  renderTranscript();
+  ui.composer.value = '';
+  setSending(true);
+
+  try {
+    const sentAttachments = [...state.attachments];
+    await request(`/sessions/${state.currentSessionId}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        content,
+        attachments: sentAttachments,
+      }),
+    });
+    state.attachments = [];
+    state.fileStatus = 'No files selected';
+    renderAttachments();
+    updateStatusBar();
+  } catch (error) {
+    renderSystemMessage(`Send failed: ${error.message}`);
+    setRunState('idle');
+  } finally {
+    setSending(false);
+  }
+}
+
+async function uploadSelectedFiles() {
+  const files = Array.from(ui.fileInput.files || []);
+  if (files.length === 0) {
+    return;
+  }
+
+  setUploading(true);
+  state.fileStatus = `Uploading ${files.length} file(s)...`;
+  updateStatusBar();
+
+  for (const file of files) {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const response = await fetch(`${state.apiBase}/files`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || `${response.status}`);
+      }
+
+      const metadata = await response.json();
+      state.attachments.push(metadata);
+    } catch (error) {
+      renderSystemMessage(`Upload failed for ${file.name}: ${error.message}`);
+    }
+  }
+
+  ui.fileInput.value = '';
+  setUploading(false);
+  state.fileStatus = state.attachments.length > 0 ? `${state.attachments.length} file(s) ready` : 'No files selected';
+  updateStatusBar();
+  renderAttachments();
+}
+
+function renderAttachments() {
+  ui.attachments.innerHTML = '';
+
+  for (const attachment of state.attachments) {
+    const badge = document.createElement('div');
+    badge.className = 'badge';
+    badge.textContent = `${attachment.filename} - ${attachment.mime_type}`;
+    ui.attachments.appendChild(badge);
+  }
+}
+
+function upsertInterrupt(interrupt) {
+  const existing = state.interrupts.findIndex(item => item.interrupt_id === interrupt.interrupt_id);
+  if (existing >= 0) {
+    state.interrupts[existing] = interrupt;
+  } else {
+    state.interrupts.push(interrupt);
+  }
+  renderInterrupts();
+}
+
+function renderInterrupts() {
+  ui.interrupts.innerHTML = '';
+
+  for (const interrupt of state.interrupts) {
+    const card = document.createElement('div');
+    card.className = 'interrupt-card';
+    card.innerHTML = `<strong>${interrupt.kind}</strong><div>${interrupt.prompt}</div>`;
+
+    if (interrupt.kind === 'confirm') {
+      const row = document.createElement('div');
+      row.className = 'composer-actions';
+
+      const approve = document.createElement('button');
+      approve.textContent = 'Approve';
+      approve.className = 'btn primary';
+      approve.addEventListener('click', () => {
+        void respondInterrupt(interrupt, true);
+      });
+
+      const reject = document.createElement('button');
+      reject.className = 'btn ghost';
+      reject.textContent = 'Reject';
+      reject.addEventListener('click', () => {
+        void respondInterrupt(interrupt, false);
+      });
+
+      row.append(approve, reject);
+      card.appendChild(row);
+    }
+
+    ui.interrupts.appendChild(card);
+  }
+}
+
+async function respondInterrupt(interrupt, value) {
+  try {
+    await request(`/sessions/${interrupt.session_id}/interrupts/${interrupt.interrupt_id}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: interrupt.kind, value }),
+    });
+  } catch (error) {
+    renderSystemMessage(`Interrupt response failed: ${error.message}`);
+  }
+}
+
+function bindUiHandlers() {
+  ui.saveBase.addEventListener('click', () => {
+    state.apiBase = ui.apiBase.value.trim().replace(/\/$/, '');
+    persistApiBase(state.apiBase);
+    void refreshSessions();
+  });
+
+  ui.newSession.addEventListener('click', async () => {
+    const session = await createSession();
+    await refreshSessions(session.session_id);
+  });
+
+  ui.sendMessage.addEventListener('click', () => {
+    void sendCurrentMessage();
+  });
+
+  ui.composer.addEventListener('keydown', event => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      void sendCurrentMessage();
+    }
+  });
+
+  ui.fileInput.addEventListener('change', () => {
+    void uploadSelectedFiles();
+  });
+}
+
+function bootstrap() {
+  renderAppShell();
+  ui = getUi();
+  bindUiHandlers();
+  updateStatusBar();
+  void refreshSessions();
+}
+
+try {
+  bootstrap();
+} catch (error) {
+  renderFatalError(error);
+}
