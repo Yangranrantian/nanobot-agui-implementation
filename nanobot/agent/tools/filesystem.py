@@ -38,7 +38,7 @@ class ReadFileTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Read the contents of a file at the given path."
+        return "Read UTF-8 text file contents at the given path. Do not use for images."
 
     @property
     def parameters(self) -> dict[str, Any]:

@@ -19,6 +19,7 @@ from nanobot.agent.memory import MemoryStore
 from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
+from nanobot.agent.tools.image import ImageInspectTool
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.shell import ExecTool
@@ -68,10 +69,12 @@ class AgentLoop:
         session_manager: SessionManager | None = None,
         mcp_servers: dict | None = None,
         channels_config: ChannelsConfig | None = None,
+        image_model_primary: str | None = None,
     ):
         from nanobot.config.schema import ExecToolConfig
         self.bus = bus
         self.channels_config = channels_config
+        self.image_model_primary = image_model_primary
         self.provider = provider
         self.workspace = workspace
         self.model = model or provider.get_default_model()
@@ -121,6 +124,15 @@ class AgentLoop:
         allowed_dir = self.workspace if self.restrict_to_workspace else None
         for cls in (ReadFileTool, WriteFileTool, EditFileTool, ListDirTool):
             self.tools.register(cls(workspace=self.workspace, allowed_dir=allowed_dir))
+        self.tools.register(
+            ImageInspectTool(
+                provider=self.provider,
+                workspace=self.workspace,
+                allowed_dir=allowed_dir,
+                model_getter=lambda: self.model,
+                image_model_getter=lambda: self.image_model_primary,
+            )
+        )
         self.tools.register(ExecTool(
             working_dir=str(self.workspace),
             timeout=self.exec_config.timeout,
@@ -181,11 +193,64 @@ class AgentLoop:
             return f'{tc.name}("{val[:40]}鈥?)' if len(val) > 40 else f'{tc.name}("{val}")'
         return ", ".join(_fmt(tc) for tc in tool_calls)
 
+    @staticmethod
+    def infer_image_paths_from_text(
+        text: str,
+        workspace: Path,
+        *,
+        extra_roots: list[Path] | None = None,
+    ) -> list[str]:
+        if not text.strip():
+            return []
+        image_exts = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+        roots = [workspace]
+        if extra_roots:
+            roots.extend(extra_roots)
+        candidates: list[Path] = []
+        token_pattern = re.compile(
+            r'([A-Za-z]:\\[^\s"\'<>]+?\.(?:png|jpg|jpeg|webp|gif|bmp)|'
+            r'`[^`\n]+?\.(?:png|jpg|jpeg|webp|gif|bmp)`|'
+            r'[^\s"\'<>]+?\.(?:png|jpg|jpeg|webp|gif|bmp))',
+            flags=re.IGNORECASE,
+        )
+        for match in token_pattern.finditer(text.replace("\n", " ")):
+            cleaned = match.group(1).strip().strip("`'\".,;:!?)]}").strip()
+            cleaned = cleaned.replace("\\", "/")
+            if not cleaned:
+                continue
+            for marker in ("#L", ":L"):
+                if marker in cleaned:
+                    cleaned = cleaned.split(marker, 1)[0]
+            path = Path(cleaned)
+            suffix = path.suffix.lower()
+            if suffix not in image_exts:
+                continue
+            if path.is_absolute():
+                candidates.append(path)
+                continue
+            for root in roots:
+                candidates.append(root / path)
+                if "/" not in cleaned and "\\" not in cleaned:
+                    candidates.append(root / path.name)
+        unique: list[str] = []
+        seen: set[str] = set()
+        for item in candidates:
+            resolved = item.expanduser().resolve()
+            if not resolved.exists() or not resolved.is_file():
+                continue
+            key = str(resolved)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(key)
+        return unique
+
     async def _run_agent_loop(
         self,
         initial_messages: list[dict],
         on_progress: Callable[..., Awaitable[None]] | None = None,
         on_event: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
+        emit_progress_text: bool = True,
     ) -> tuple[str | None, list[str], list[dict]]:
         """Run the agent iteration loop. Returns (final_content, tools_used, messages)."""
         messages = initial_messages
@@ -206,7 +271,7 @@ class AgentLoop:
             )
 
             if response.has_tool_calls:
-                if on_progress:
+                if on_progress and emit_progress_text:
                     thought = self._strip_think(response.content)
                     if thought:
                         await on_progress(thought)
@@ -481,10 +546,14 @@ class AgentLoop:
                 message_tool.start_turn()
 
         history = session.get_history(max_messages=self.memory_window)
+        merged_media: list[str] = []
+        for path in msg.media or []:
+            if path and path not in merged_media:
+                merged_media.append(path)
         initial_messages = self.context.build_messages(
             history=history,
             current_message=msg.content,
-            media=msg.media if msg.media else None,
+            media=merged_media if merged_media else None,
             channel=msg.channel, chat_id=msg.chat_id,
         )
 
@@ -497,7 +566,10 @@ class AgentLoop:
             ))
 
         final_content, _, all_msgs = await self._run_agent_loop(
-            initial_messages, on_progress=on_progress or _bus_progress, on_event=on_event,
+            initial_messages,
+            on_progress=on_progress or _bus_progress,
+            on_event=on_event,
+            emit_progress_text=(msg.channel != "web"),
         )
 
         if final_content is None:

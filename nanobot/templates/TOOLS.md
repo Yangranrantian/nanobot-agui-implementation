@@ -13,3 +13,9 @@ This file documents non-obvious constraints and usage patterns.
 ## cron — Scheduled Reminders
 
 - Please refer to cron skill for usage.
+
+## image_inspect — Image Understanding
+
+- Use `image_inspect` for local image files (png/jpg/jpeg/webp/gif/bmp)
+- Prefer it over `read_file` when user asks to describe or analyze an image
+- Pass the image path and a concise question

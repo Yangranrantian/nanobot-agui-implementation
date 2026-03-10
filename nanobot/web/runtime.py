@@ -58,6 +58,7 @@ class WebRuntime:
         agent_loop=None,
         image_model_primary: str | None = None,
         provider_name: str | None = None,
+        preview_roots: list[Path] | None = None,
     ):
         self.workspace = Path(workspace)
         self.sessions = SessionManager(self.workspace)
@@ -67,9 +68,37 @@ class WebRuntime:
         self._event_queues: dict[str, asyncio.Queue[dict]] = {}
         self._pending_interrupts: dict[str, tuple[str, asyncio.Future[InterruptResponse], InterruptEnvelope]] = {}
         self._artifacts: dict[str, Artifact] = {}
+        self._preview_roots = [p.resolve() for p in (preview_roots or self._default_preview_roots())]
+        self._fallback_search_roots = [p.resolve() for p in self._default_fallback_search_roots()]
         self.files = FileStore(self.workspace / "web_uploads")
         if agent_loop is not None:
             self.attach_agent_loop(agent_loop)
+
+    def _default_preview_roots(self) -> list[Path]:
+        roots = [self.workspace, self.workspace.parent, self.workspace.parent.parent, Path.home(), Path.home() / ".nanobot" / "workspace"]
+        uniq: list[Path] = []
+        seen: set[str] = set()
+        for root in roots:
+            resolved = root.resolve()
+            key = str(resolved)
+            if key in seen:
+                continue
+            seen.add(key)
+            uniq.append(resolved)
+        return uniq
+
+    def _default_fallback_search_roots(self) -> list[Path]:
+        roots = [self.workspace, self.workspace.parent, self.workspace.parent.parent, Path.home() / ".nanobot" / "workspace"]
+        uniq: list[Path] = []
+        seen: set[str] = set()
+        for root in roots:
+            resolved = root.resolve()
+            key = str(resolved)
+            if key in seen:
+                continue
+            seen.add(key)
+            uniq.append(resolved)
+        return uniq
 
     def attach_agent_loop(self, agent_loop) -> None:
         self.agent_loop = agent_loop
@@ -399,6 +428,76 @@ class WebRuntime:
         if artifact is None:
             raise KeyError(artifact_id)
         return resolve_artifact_preview(artifact)
+
+    def preview_workspace_path(self, raw_path: str) -> dict:
+        normalized = self._normalize_preview_reference(raw_path)
+        candidate = Path(normalized)
+        if not candidate.is_absolute() and ".." in candidate.parts:
+            raise ValueError("Path outside workspace is not allowed")
+        target = self._resolve_preview_target(normalized)
+        if target is None:
+            raise FileNotFoundError(normalized)
+        suffix = target.suffix.lower()
+        mime_type = mimetypes.guess_type(str(target))[0] or "text/plain"
+        viewer_type = "code" if suffix in {".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".json", ".yaml", ".yml", ".sh"} else "text"
+        if suffix in {".md", ".txt"}:
+            viewer_type = "text"
+        content = target.read_text(encoding="utf-8", errors="replace")
+        relative_path = self._display_preview_path(target.resolve())
+        return {
+            "path": relative_path,
+            "title": target.name,
+            "mime_type": mime_type,
+            "viewer_type": viewer_type,
+            "content": content,
+        }
+
+    @staticmethod
+    def _normalize_preview_reference(raw_path: str) -> str:
+        text = str(raw_path or "").strip().strip("`")
+        text = text.replace("\\", "/")
+        if "#L" in text:
+            text = text.split("#L", 1)[0]
+        if ":L" in text:
+            text = text.split(":L", 1)[0]
+        if "#" in text:
+            text = text.split("#", 1)[0]
+        if text.startswith("./"):
+            text = text[2:]
+        return text.strip()
+
+    def _resolve_preview_target(self, normalized: str) -> Path | None:
+        candidate = Path(normalized)
+        if candidate.is_absolute():
+            resolved = candidate.resolve()
+            if self._is_under_allowed_roots(resolved) and resolved.exists() and resolved.is_file():
+                return resolved
+            return None
+        relative = Path(normalized)
+        if ".." in relative.parts:
+            return None
+        for root in self._preview_roots:
+            direct = (root / relative).resolve()
+            if self._is_under_allowed_roots(direct) and direct.exists() and direct.is_file():
+                return direct
+        return None
+
+    def _is_under_allowed_roots(self, target: Path) -> bool:
+        text = str(target)
+        return any(text.startswith(str(root)) for root in self._preview_roots)
+
+    def _display_preview_path(self, target: Path) -> str:
+        for root in self._preview_roots:
+            try:
+                return target.relative_to(root).as_posix()
+            except ValueError:
+                continue
+        return target.as_posix()
+
+    # NOTE:
+    # We intentionally avoid recursive fallback scans for preview resolution.
+    # Deterministic direct path resolution keeps preview requests fast and
+    # prevents blocking the event loop under high-volume inline link checks.
 
     def _ensure_event_queue(self, session_id: str) -> asyncio.Queue[dict]:
         if session_id not in self._event_queues:

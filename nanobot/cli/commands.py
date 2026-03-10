@@ -1,4 +1,4 @@
-﻿"""CLI commands for nanobot."""
+"""CLI commands for nanobot."""
 
 import asyncio
 import os
@@ -340,6 +340,7 @@ def gateway(
         session_manager=session_manager,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
+        image_model_primary=config.agents.defaults.image_model.primary,
     )
 
     # Set cron callback (needs agent)
@@ -516,6 +517,7 @@ def web(
         restrict_to_workspace=loaded.tools.restrict_to_workspace,
         mcp_servers=loaded.tools.mcp_servers,
         channels_config=loaded.channels,
+        image_model_primary=loaded.agents.defaults.image_model.primary,
     )
     runtime = WebRuntime(
         loaded.workspace_path,
@@ -583,6 +585,7 @@ def agent(
         restrict_to_workspace=config.tools.restrict_to_workspace,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
+        image_model_primary=config.agents.defaults.image_model.primary,
     )
 
     # Show spinner when logs are off (no output to miss); skip when logs are on

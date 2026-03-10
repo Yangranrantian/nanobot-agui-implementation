@@ -87,5 +87,14 @@ def create_app(*, runtime: WebRuntime | None = None, workspace: Path | None = No
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Artifact not found") from exc
 
+    @app.get("/workspace/preview")
+    async def preview_workspace_path(path: str = Query(...)):
+        try:
+            return app.state.runtime.preview_workspace_path(path)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     return app
 
