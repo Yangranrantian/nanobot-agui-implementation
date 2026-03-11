@@ -47,7 +47,7 @@ select { font: inherit; }
   padding: 12px;
   display: grid;
   gap: 12px;
-  grid-template-columns: 300px minmax(0, 1fr) 320px;
+  grid-template-columns: 300px minmax(0, 1fr);
   height: 100vh;
 }
 
@@ -180,11 +180,34 @@ select { font: inherit; }
 
 .right-pane {
   padding: 14px;
-  display: grid;
+  display: none;
   align-content: start;
   gap: 10px;
   min-height: 0;
   overflow-y: auto;
+}
+
+.app-shell.preview-open {
+  grid-template-columns: 300px minmax(0, 1fr) 420px;
+}
+
+.app-shell.preview-collapsed {
+  grid-template-columns: 300px minmax(0, 1fr) 40px;
+}
+
+.right-pane.hidden-pane {
+  display: none;
+}
+
+.app-shell.preview-open .right-pane,
+.app-shell.preview-collapsed .right-pane {
+  display: grid;
+}
+
+.right-pane.collapsed {
+  padding: 8px 6px;
+  align-content: center;
+  justify-items: center;
 }
 
 .pane-head {
@@ -466,6 +489,57 @@ select { font: inherit; }
   text-decoration: underline;
   padding: 0;
   font-size: 12px;
+}
+
+.artifact-inline-reference {
+  display: inline;
+  font-size: inherit;
+}
+
+.preview-handle {
+  writing-mode: vertical-rl;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
+  padding: 10px 6px;
+}
+
+.pane-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.preview-markdown {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 14px;
+  overflow: auto;
+  max-height: 65vh;
+}
+
+.preview-code {
+  white-space: pre;
+}
+
+.preview-html-frame {
+  width: 100%;
+  min-height: 65vh;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.preview-image {
+  display: block;
+  width: 100%;
+  max-height: 70vh;
+  object-fit: contain;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
 }
 
 .tool-flow {
@@ -835,3 +909,14 @@ select { font: inherit; }
 }
 
 
+
+
+.artifact-inline-image {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 12px;
+  border: 1px solid #dbe4f0;
+  cursor: zoom-in;
+  background: #f8fafc;
+}

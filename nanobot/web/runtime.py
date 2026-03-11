@@ -439,18 +439,28 @@ class WebRuntime:
             raise FileNotFoundError(normalized)
         suffix = target.suffix.lower()
         mime_type = mimetypes.guess_type(str(target))[0] or "text/plain"
-        viewer_type = "code" if suffix in {".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".json", ".yaml", ".yml", ".sh"} else "text"
-        if suffix in {".md", ".txt"}:
+        if suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"}:
+            viewer_type = "image"
+        elif suffix in {".md"}:
+            viewer_type = "markdown"
+        elif suffix in {".html", ".htm"}:
+            viewer_type = "html"
+        elif suffix in {".py", ".js", ".ts", ".tsx", ".jsx", ".css", ".json", ".yaml", ".yml", ".sh", ".bat", ".ps1", ".toml", ".ini", ".sql", ".xml"}:
+            viewer_type = "code"
+        else:
             viewer_type = "text"
-        content = target.read_text(encoding="utf-8", errors="replace")
         relative_path = self._display_preview_path(target.resolve())
-        return {
+        payload = {
             "path": relative_path,
             "title": target.name,
             "mime_type": mime_type,
             "viewer_type": viewer_type,
-            "content": content,
         }
+        if viewer_type == "image":
+            payload["content_url"] = f"/workspace/file?path={relative_path}"
+            return payload
+        payload["content"] = target.read_text(encoding="utf-8", errors="replace")
+        return payload
 
     @staticmethod
     def _normalize_preview_reference(raw_path: str) -> str:
@@ -480,6 +490,17 @@ class WebRuntime:
             direct = (root / relative).resolve()
             if self._is_under_allowed_roots(direct) and direct.exists() and direct.is_file():
                 return direct
+        if len(relative.parts) == 1:
+            basename = relative.name
+            matches: list[Path] = []
+            for root in self._fallback_search_roots:
+                for candidate_path in root.rglob(basename):
+                    resolved = candidate_path.resolve()
+                    if self._is_under_allowed_roots(resolved) and resolved.is_file():
+                        matches.append(resolved)
+            matches.sort(key=lambda p: (0 if 'memory' in p.parts else 1, len(p.parts), str(p)))
+            if matches:
+                return matches[0]
         return None
 
     def _is_under_allowed_roots(self, target: Path) -> bool:

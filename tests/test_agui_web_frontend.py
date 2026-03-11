@@ -108,12 +108,12 @@ def test_agui_web_image_thumbnail_is_72px_default():
     assert "height: 72px;" in styles
 
 
-def test_agui_web_right_pane_supports_inspector_and_preview_modes():
+def test_agui_web_right_pane_supports_on_demand_preview_mode():
     root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
     app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
     styles = (root / "src" / "styles.css").read_text(encoding="utf-8")
 
-    assert "rightPaneMode: 'inspector'" in app_js
+    assert "rightPaneMode: 'hidden'" in app_js
     assert "previewArtifactId: null" in app_js
     assert 'id="right-pane"' in app_js
     assert "function openArtifactPreview(" in app_js
@@ -170,11 +170,12 @@ def test_agui_web_renders_inline_hitl_cards_and_result_summary():
     assert "interrupt.kind === 'single_select'" in app_js
     assert "interrupt.kind === 'form'" in app_js
     assert "interrupt.resultSummary" in app_js
-    assert "state.interrupts = state.interrupts.map(" in app_js
+    assert "message.interruptCard" in app_js
+    assert "updateInterruptCard(interrupt.interrupt_id" in app_js
     assert ".inline-hitl" in styles
 
 
-def test_agui_web_projects_task_events_into_inspector_status():
+def test_agui_web_projects_task_events_still_update_runtime_status():
     root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
     app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
 
@@ -183,28 +184,27 @@ def test_agui_web_projects_task_events_into_inspector_status():
     assert "activeTaskCount" in app_js
 
 
-def test_agui_web_inspector_is_minimal_and_details_collapsed():
+def test_agui_web_preview_pane_replaces_persistent_inspector():
     root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
     app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
 
-    assert "pane-section-title\">对象" in app_js
-    assert "pane-section-title\">状态" in app_js
-    assert "pane-section-title\">技能" in app_js
-    assert "<details class=\"pane-details\"" in app_js
-    assert "模式：" in app_js
-
+    assert "pane-details" not in app_js
+    assert "togglePreviewCollapse" in app_js
+    assert "preview-handle" in app_js
 
 def test_agui_web_tool_flow_is_bound_to_assistant_message_position():
     root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
     app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
 
-    assert "function getActiveAssistantMessage()" in app_js
-    assert "function ensurePendingAssistantMessage()" in app_js
+    assert "function getActiveAssistantMessage(runId = state.activeRunId)" in app_js
+    assert "function ensurePendingAssistantMessage(runId = state.activeRunId)" in app_js
     assert "renderToolFlow(toolStage, message);" in app_js
     assert "state.messages.push(pendingMessage);" in app_js
     assert "active.toolFlow = active.toolFlow || [];" in app_js
     assert "status: 'running'" in app_js
     assert "status: event.type === 'tool.failed' ? 'failed' : 'completed'" in app_js
+    assert "runMessageIds" in app_js
+    assert "event.run_id || state.activeRunId" in app_js
 
 
 def test_agui_web_thinking_indicator_uses_blinking_state_not_ellipsis():
@@ -229,7 +229,7 @@ def test_agui_web_mermaid_is_rendered_inline_not_only_file_reference():
     assert ".mermaid-rendered" in styles
 
 
-def test_agui_web_inspector_updates_when_artifact_or_status_changes():
+def test_agui_web_preview_state_updates_when_artifact_or_status_changes():
     root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
     app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
 
@@ -265,11 +265,11 @@ def test_agui_web_dev_only_version_badge_exists_for_cache_debugging():
     styles = (root / "src" / "styles.css").read_text(encoding="utf-8")
     index_html = (root / "index.html").read_text(encoding="utf-8")
 
-    assert "const FRONTEND_VERSION = '20260309-21'" in app_js
+    assert "const FRONTEND_VERSION = '20260311-04'" in app_js
     assert "function shouldShowDevVersionBadge()" in app_js
     assert "dev-version-badge" in app_js
     assert ".dev-version-badge" in styles
-    assert "app.js?v=20260309-21" in index_html
+    assert "app.js?v=20260311-04" in index_html
 
 
 def test_agui_web_renders_assistant_markdown_and_compact_tool_summary():
@@ -376,3 +376,110 @@ def test_agui_web_clickable_path_references_open_split_preview_with_content():
     assert "artifact.content" in app_js
     assert "path-reference" in app_js
     assert ".path-reference" in styles
+
+def test_agui_web_interrupts_are_not_rendered_via_global_interrupt_rail_anymore():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+
+    assert "message.interruptCard" in app_js or "message.interrupts" in app_js
+    assert "document.getElementById('interrupts')" not in app_js
+    assert "ui.interrupts" not in app_js
+
+
+def test_agui_web_prefers_explicit_message_artifact_references_before_path_regex_fallback():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+
+    assert "message.artifactReferences" in app_js
+    assert "function attachArtifactToActiveMessage" in app_js
+    assert "function hydrateArtifactPreview" in app_js
+    assert "/workspace/preview?path=" in app_js
+
+
+def test_agui_web_preview_pane_is_on_demand_not_persistent_inspector():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+    styles = (root / "src" / "styles.css").read_text(encoding="utf-8")
+
+    assert "preview-open" in app_js
+    assert "preview-collapsed" in app_js
+    assert "closeArtifactPreview" in app_js
+    assert "togglePreviewCollapse" in app_js
+    assert "pane-details" not in app_js
+    assert ".app-shell.preview-open" in styles
+    assert ".app-shell.preview-collapsed" in styles
+    assert ".preview-handle" in styles
+
+
+def test_agui_web_preview_renders_markdown_html_code_and_images_by_type():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+    styles = (root / "src" / "styles.css").read_text(encoding="utf-8")
+
+    assert "function renderArtifactPreviewBody" in app_js
+    assert "artifact.type === 'report'" in app_js or "mime.includes('markdown')" in app_js
+    assert "mime.includes('html')" in app_js
+    assert "viewer_type === 'code'" in app_js or "artifact.type === 'code'" in app_js
+    assert "artifact.type === 'image'" in app_js
+    assert "preview-html-frame" in app_js
+    assert "preview-markdown" in app_js
+    assert "preview-code" in app_js
+    assert ".preview-html-frame" in styles
+    assert ".preview-markdown" in styles
+    assert ".preview-code" in styles
+
+
+def test_agui_web_inlines_explicit_artifact_titles_into_assistant_body_links():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+
+    assert "function enhanceArtifactReferencesInline" in app_js
+    assert "message.artifactReferences" in app_js
+    assert "artifact-inline-reference" in app_js
+
+
+def test_agui_web_sync_history_preserves_transient_artifact_references_after_completion():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+
+    assert "last.artifactReferences = transientAssistant.artifactReferences;" in app_js
+
+
+def test_agui_web_inline_artifact_links_match_full_paths_not_only_titles():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+
+    assert "path: artifact.path," in app_js
+    assert "...buildReferenceTextVariants(path)," in app_js
+    assert "const matches = [];" in app_js
+    assert "btn.textContent = match.variant;" in app_js
+
+
+def test_agui_web_reference_variants_cover_windows_paths_after_markdown_rendering():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+
+    assert "function buildReferenceTextVariants(value)" in app_js
+    assert "const rawNoBackslash =" in app_js
+    assert "const windowsLike =" in app_js
+    assert "const normalizedNoSlash =" in app_js
+    assert "entry.variants.some(variant => original.includes(variant))" in app_js
+
+
+def test_agui_web_inline_path_links_do_not_wait_for_preview_probe_before_rendering():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+
+    assert "const checks = await Promise.all(uniqRefs.map(ref => canPreviewPathRef(ref)));" not in app_js
+    assert "const validRefs = uniqRefs.filter((_ref, idx) => checks[idx]);" not in app_js
+    assert "const sorted = [...new Set(refs)]" in app_js
+
+
+def test_agui_web_message_artifact_images_render_as_clickable_thumbnails():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+
+    assert "function renderMessageArtifactReferences(container, message)" in app_js
+    assert "if (artifact.type === 'image')" in app_js
+    assert "artifact-inline-image" in app_js
+    assert "resolveArtifactContentUrl(artifact)" in app_js

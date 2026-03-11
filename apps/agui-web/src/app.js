@@ -5,13 +5,15 @@ const state = {
   messages: [],
   toolEvents: [],
   artifacts: [],
-  interrupts: [],
   pendingInterrupt: null,
   eventSource: null,
   pendingAssistantId: null,
+  activeRunId: null,
+  runMessageIds: {},
   attachments: [],
-  rightPaneMode: 'inspector',
+  rightPaneMode: 'hidden',
   previewArtifactId: null,
+  previewCollapsed: false,
   connectionStatus: 'offline',
   runState: 'idle',
   activeTaskCount: 0,
@@ -29,7 +31,7 @@ const state = {
 
 const app = document.getElementById('app');
 let ui;
-const FRONTEND_VERSION = '20260309-21';
+const FRONTEND_VERSION = '20260311-04';
 
 function readStoredApiBase() {
   try {
@@ -112,7 +114,6 @@ function renderAppShell() {
         </section>
 
         <section class="composer-wrap">
-          <div id="interrupts" class="interrupts"></div>
           <div id="attachments" class="attachments"></div>
           <textarea id="composer" placeholder="输入消息... Enter发送，Shift+Enter换行"></textarea>
           <div class="composer-actions">
@@ -153,7 +154,6 @@ function getUi() {
     imageViewer: document.getElementById('image-viewer'),
     imageViewerImg: document.getElementById('image-viewer-img'),
     imageViewerClose: document.getElementById('image-viewer-close'),
-    interrupts: document.getElementById('interrupts'),
     attachments: document.getElementById('attachments'),
     composer: document.getElementById('composer'),
     sendMessage: document.getElementById('send-message'),
@@ -335,6 +335,13 @@ function toUiMessages(items) {
         role: item.role === 'assistant' ? 'assistant' : item.role === 'system' ? 'system' : 'user',
         content: normalizeMessageContent(item.content),
         attachments: normalizeMessageAttachments(item.attachments),
+        toolFlow: [],
+        completedToolCount: 0,
+        toolSummaryCount: 0,
+        progressHints: [],
+        isThinking: false,
+        interruptCard: null,
+        artifactReferences: [],
       };
     })
     .filter(Boolean);
@@ -427,6 +434,8 @@ async function syncHistoryAfterCompletion(sessionId) {
           toolFlow: Array.isArray(msg.toolFlow) ? msg.toolFlow : [],
           toolSummaryCount: msg.toolSummaryCount || 0,
           progressHints: Array.isArray(msg.progressHints) ? msg.progressHints : [],
+          artifactReferences: Array.isArray(msg.artifactReferences) ? msg.artifactReferences : [],
+          interruptCard: msg.interruptCard || null,
         };
       }
     }
@@ -445,6 +454,8 @@ async function syncHistoryAfterCompletion(sessionId) {
             last.toolFlow = transientAssistant.toolFlow;
             last.toolSummaryCount = transientAssistant.toolSummaryCount;
             last.progressHints = transientAssistant.progressHints;
+            last.artifactReferences = transientAssistant.artifactReferences;
+            last.interruptCard = transientAssistant.interruptCard;
           }
         }
         renderTranscript();
@@ -466,7 +477,7 @@ async function syncHistoryAfterCompletion(sessionId) {
 async function selectSession(sessionId) {
   state.currentSessionId = sessionId;
   state.pendingAssistantId = null;
-  state.interrupts = [];
+  state.pendingInterrupt = null;
   renderSessions();
   ui.sessionTitle.textContent = sessionId;
 
@@ -506,14 +517,16 @@ function connectEventStream(sessionId) {
 function handleEvent(event) {
   switch (event.type) {
     case 'run.started':
+      state.activeRunId = event.run_id || null;
       setRunState('running');
-      ensurePendingAssistantMessage();
+      ensurePendingAssistantMessage(event.run_id);
       renderTranscript();
       break;
 
     case 'message.started':
+      state.activeRunId = event.run_id || state.activeRunId;
       setRunState('running');
-      ensurePendingAssistantMessage();
+      ensurePendingAssistantMessage(event.run_id);
       renderTranscript();
       break;
 
@@ -527,16 +540,16 @@ function handleEvent(event) {
         if (!chunk) {
           break;
         }
-        appendAssistantChunk(chunk, false);
+        appendAssistantChunk(chunk, false, event.run_id);
       }
       break;
 
     case 'message.completed':
       if (typeof event.content === 'string' && event.content.length > 0) {
-        appendAssistantChunk(event.content, true);
+        appendAssistantChunk(event.content, true, event.run_id);
       }
       {
-        const active = getActiveAssistantMessage();
+        const active = getActiveAssistantMessage(event.run_id);
         if (active) {
           active.isThinking = false;
           const toolCount = Array.isArray(active.toolFlow) ? active.toolFlow.length : 0;
@@ -552,7 +565,13 @@ function handleEvent(event) {
           }
         }
       }
-      state.pendingAssistantId = null;
+      if (!event.run_id || state.runMessageIds[event.run_id] === state.pendingAssistantId) {
+        state.pendingAssistantId = null;
+      }
+      if (event.run_id) {
+        delete state.runMessageIds[event.run_id];
+      }
+      state.activeRunId = null;
       state.followRunOutput = false;
       setRunState('idle');
       if (state.currentSessionId) {
@@ -561,7 +580,8 @@ function handleEvent(event) {
       break;
 
     case 'interrupt.requested':
-      upsertInterrupt(event);
+      attachInterruptToMessage(event);
+      renderTranscript();
       renderRightPane();
       break;
 
@@ -593,17 +613,12 @@ function handleEvent(event) {
       break;
 
     case 'interrupt.resolved':
-      state.interrupts = state.interrupts.map(item => (
-        item.interrupt_id === event.interrupt_id
-          ? {
-              ...item,
-              status: 'resolved',
-              resultSummary: `Resolved: ${String(event.value ?? 'submitted')}`,
-            }
-          : item
-      ));
-      state.pendingInterrupt = state.interrupts.find(item => item.status !== 'resolved') || null;
-      renderInterrupts();
+      updateInterruptCard(event.interrupt_id, item => ({
+        ...item,
+        status: 'resolved',
+        resultSummary: summarizeInterruptValue(event.value),
+      }));
+      renderTranscript();
       renderRightPane();
       break;
 
@@ -618,8 +633,8 @@ function handleEvent(event) {
   }
 }
 
-function appendAssistantChunk(chunk, replace = false) {
-  const target = ensurePendingAssistantMessage();
+function appendAssistantChunk(chunk, replace = false, runId = state.activeRunId) {
+  const target = ensurePendingAssistantMessage(runId);
 
   const message = target;
   message.isThinking = false;
@@ -627,11 +642,27 @@ function appendAssistantChunk(chunk, replace = false) {
   renderTranscript();
 }
 
-function ensurePendingAssistantMessage() {
-  const existing = state.pendingAssistantId
-    ? state.messages.find(message => message.id === state.pendingAssistantId)
-    : null;
+function getAssistantMessageForRun(runId) {
+  if (!runId) {
+    return null;
+  }
+  const mappedId = state.runMessageIds[runId];
+  if (!mappedId) {
+    return null;
+  }
+  return state.messages.find(message => message.id === mappedId) || null;
+}
+
+function ensurePendingAssistantMessage(runId = state.activeRunId) {
+  const existing = getAssistantMessageForRun(runId)
+    || (state.pendingAssistantId
+      ? state.messages.find(message => message.id === state.pendingAssistantId)
+      : null);
   if (existing) {
+    if (runId) {
+      state.runMessageIds[runId] = existing.id;
+    }
+    state.pendingAssistantId = existing.id;
     return existing;
   }
   const pendingId = `assistant-${Date.now()}`;
@@ -645,13 +676,23 @@ function ensurePendingAssistantMessage() {
     toolSummaryCount: 0,
     progressHints: [],
     isThinking: true,
+    interruptCard: null,
+    artifactReferences: [],
+    runId: runId || null,
   };
   state.pendingAssistantId = pendingId;
+  if (runId) {
+    state.runMessageIds[runId] = pendingId;
+  }
   state.messages.push(pendingMessage);
   return pendingMessage;
 }
 
-function getActiveAssistantMessage() {
+function getActiveAssistantMessage(runId = state.activeRunId) {
+  const mapped = getAssistantMessageForRun(runId);
+  if (mapped) {
+    return mapped;
+  }
   if (state.pendingAssistantId) {
     const pending = state.messages.find(message => message.id === state.pendingAssistantId);
     if (pending) {
@@ -667,9 +708,10 @@ function getActiveAssistantMessage() {
 }
 
 function upsertToolEventForActiveMessage(event) {
+  const runId = event.run_id || state.activeRunId;
   const active = event.type === 'tool.started'
-    ? ensurePendingAssistantMessage()
-    : getActiveAssistantMessage();
+    ? ensurePendingAssistantMessage(runId)
+    : getActiveAssistantMessage(runId);
   if (!active) return;
   active.toolFlow = active.toolFlow || [];
   const payload = event.payload || {};
@@ -709,17 +751,37 @@ function upsertToolEventForActiveMessage(event) {
 function upsertArtifactFromEvent(event) {
   const artifact = event.artifact || event.payload?.artifact;
   if (!artifact) {
-    return;
+    return null;
   }
   const artifactId = artifact.artifact_id || artifact.file_id || artifact.path;
   if (!artifactId) {
-    return;
+    return null;
   }
+  const normalized = { ...artifact, artifact_id: artifactId, run_id: event.run_id || artifact.run_id || null };
   const idx = state.artifacts.findIndex(item => item.artifact_id === artifactId);
   if (idx >= 0) {
-    state.artifacts[idx] = { ...state.artifacts[idx], ...artifact, artifact_id: artifactId };
+    state.artifacts[idx] = { ...state.artifacts[idx], ...normalized };
   } else {
-    state.artifacts.unshift({ ...artifact, artifact_id: artifactId });
+    state.artifacts.unshift(normalized);
+  }
+  attachArtifactToActiveMessage(normalized);
+  return normalized;
+}
+
+function attachArtifactToActiveMessage(artifact) {
+  const runId = artifact.run_id || state.activeRunId;
+  const target = getActiveAssistantMessage(runId) || (state.runState === 'running' ? ensurePendingAssistantMessage(runId) : null);
+  if (!target) {
+    return;
+  }
+  target.artifactReferences = Array.isArray(target.artifactReferences) ? target.artifactReferences : [];
+  if (!target.artifactReferences.some(item => item.artifact_id === artifact.artifact_id)) {
+    target.artifactReferences.push({
+      artifact_id: artifact.artifact_id,
+      title: artifact.title,
+      path: artifact.path,
+      type: artifact.type,
+    });
   }
 }
 
@@ -904,12 +966,15 @@ function renderTranscript() {
       const cleanedContent = cleanImagePlaceholder(contentWithoutMermaid, message.attachments);
       if (message.role === 'assistant') {
         body.innerHTML = renderMarkdown(cleanedContent);
+        void enhanceArtifactReferencesInline(body, message);
         void enhancePathReferencesInline(body, cleanedContent);
       } else {
         body.textContent = cleanedContent;
       }
     }
     div.appendChild(body);
+    renderMessageInterrupt(div, message);
+    renderMessageArtifactReferences(div, message);
 
     renderMessageAttachments(div, normalizeMessageAttachments(message.attachments));
     for (const source of inlineMermaidBlocks) {
@@ -1096,13 +1161,33 @@ function extractPathReferences(content) {
       refs.add(value);
     }
   }
-  const rawPathMatches = text.match(/([A-Za-z]:\\[^\s"'`]*\.[A-Za-z0-9]{1,8}|\.{0,2}\/[^\s"'`]*\.[A-Za-z0-9]{1,8}|[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\.[A-Za-z0-9]{1,8}|[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8})/g) || [];
-  for (const value of rawPathMatches) {
+  const rawTokens = text.split(/[\s<>(){}\[\],;]+/g);
+  for (const rawToken of rawTokens) {
+    const value = String(rawToken || '')
+      .trim()
+      .replace(/^["'`]+/, '')
+      .replace(/["'`]+$/, '')
+.replace(/[.!?,;:]+$/u, '')
+      .replace(/^[([{]+/u, '')
+      .replace(/[)\]}]+$/u, '')
+      .trim();
+    if (!value || value.startsWith('-')) {
+      continue;
+    }
     if (looksLikePath(value)) {
       refs.add(value);
     }
   }
-  return Array.from(refs).slice(0, 8);
+  return Array.from(refs)
+    .sort((a, b) => {
+      const aHasSep = a.includes('/') || a.includes('\\') || /^[A-Za-z]:/.test(a);
+      const bHasSep = b.includes('/') || b.includes('\\') || /^[A-Za-z]:/.test(b);
+      if (aHasSep !== bHasSep) {
+        return aHasSep ? -1 : 1;
+      }
+      return b.length - a.length;
+    })
+    .slice(0, 8);
 }
 
 function looksLikePath(value) {
@@ -1186,12 +1271,108 @@ async function openPathPreviewByReference(pathRef) {
 }
 
 function normalizePathReference(pathRef) {
+  const backslash = String.fromCharCode(92);
   return String(pathRef || '')
     .trim()
     .replace(/^`|`$/g, '')
     .replace(/#L\d+$/i, '')
     .replace(/:L\d+$/i, '')
-    .replace(/\\/g, '/');
+    .split(backslash).join('/');
+}
+
+function buildReferenceTextVariants(value) {
+  const raw = String(value || '').trim();
+  if (!raw) {
+    return [];
+  }
+  const normalized = normalizePathReference(raw);
+  const backslash = String.fromCharCode(92);
+  const rawNoBackslash = raw.split(backslash).join('');
+  const windowsLike = normalized.split('/').join(backslash);
+  const normalizedNoSlash = normalized.split('/').join('');
+  return [...new Set([
+    raw,
+    normalized,
+    rawNoBackslash,
+    windowsLike,
+    normalizedNoSlash,
+  ].filter(Boolean))].sort((a, b) => b.length - a.length);
+}
+
+async function enhanceArtifactReferencesInline(container, message) {
+  const references = Array.isArray(message.artifactReferences) ? message.artifactReferences : [];
+  if (!references.length) {
+    return;
+  }
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  const textNodes = [];
+  let node;
+  while ((node = walker.nextNode())) {
+    const parentTag = node.parentElement?.tagName;
+    if (!parentTag || ['A', 'CODE', 'PRE', 'BUTTON'].includes(parentTag)) {
+      continue;
+    }
+    textNodes.push(node);
+  }
+  const sorted = references
+    .map(ref => {
+      const title = String(ref.title || '').trim();
+      const path = String(ref.path || '').trim();
+      const variants = [...new Set([
+        ...buildReferenceTextVariants(path),
+        ...buildReferenceTextVariants(title),
+      ])];
+      return { ...ref, title, path, variants };
+    })
+    .filter(ref => ref.variants.length > 0);
+  if (!sorted.length) {
+    return;
+  }
+  for (const textNode of textNodes) {
+    const original = textNode.textContent || '';
+    const matches = [];
+    for (const ref of sorted) {
+      for (const variant of ref.variants) {
+        const idx = original.indexOf(variant);
+        if (idx >= 0) {
+          matches.push({ ref, variant, idx });
+        }
+      }
+    }
+    if (!matches.length) {
+      continue;
+    }
+    matches.sort((a, b) => {
+      if (a.idx !== b.idx) {
+        return a.idx - b.idx;
+      }
+      return b.variant.length - a.variant.length;
+    });
+    const frag = document.createDocumentFragment();
+    let cursor = 0;
+    for (const match of matches) {
+      if (match.idx < cursor) {
+        continue;
+      }
+      if (match.idx > cursor) {
+        frag.appendChild(document.createTextNode(original.slice(cursor, match.idx)));
+      }
+      const artifact = state.artifacts.find(item => item.artifact_id === match.ref.artifact_id) || match.ref;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'artifact-inline-reference artifact-reference';
+      btn.textContent = match.variant;
+      btn.addEventListener('click', () => {
+        void openArtifactPreview(artifact);
+      });
+      frag.appendChild(btn);
+      cursor = match.idx + match.variant.length;
+    }
+    if (cursor < original.length) {
+      frag.appendChild(document.createTextNode(original.slice(cursor)));
+    }
+    textNode.parentNode.replaceChild(frag, textNode);
+  }
 }
 
 async function enhancePathReferencesInline(container, content) {
@@ -1199,13 +1380,9 @@ async function enhancePathReferencesInline(container, content) {
   if (!refs.length) {
     return;
   }
-  const uniqRefs = [...new Set(refs)];
-  const checks = await Promise.all(uniqRefs.map(ref => canPreviewPathRef(ref)));
-  const validRefs = uniqRefs.filter((_ref, idx) => checks[idx]);
-  if (!validRefs.length) {
-    return;
-  }
-  const sorted = validRefs.sort((a, b) => b.length - a.length);
+  const sorted = [...new Set(refs)]
+    .map(ref => ({ ref, variants: buildReferenceTextVariants(ref) }))
+    .sort((a, b) => b.variants[0].length - a.variants[0].length);
   const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
   const textNodes = [];
   let node;
@@ -1219,9 +1396,9 @@ async function enhancePathReferencesInline(container, content) {
   for (const textNode of textNodes) {
     const original = textNode.textContent || '';
     let foundRef = null;
-    for (const ref of sorted) {
-      if (original.includes(ref)) {
-        foundRef = ref;
+    for (const entry of sorted) {
+      if (entry.variants.some(variant => original.includes(variant))) {
+        foundRef = entry;
         break;
       }
     }
@@ -1230,8 +1407,20 @@ async function enhancePathReferencesInline(container, content) {
     }
     const frag = document.createDocumentFragment();
     let rest = original;
-    while (rest.includes(foundRef)) {
-      const idx = rest.indexOf(foundRef);
+    while (rest) {
+      let matchedVariant = null;
+      let idx = -1;
+      for (const candidate of foundRef.variants) {
+        const nextIdx = rest.indexOf(candidate);
+        if (nextIdx >= 0 && (idx === -1 || nextIdx < idx || (nextIdx === idx && candidate.length > matchedVariant.length))) {
+          matchedVariant = candidate;
+          idx = nextIdx;
+        }
+      }
+      if (idx < 0 || !matchedVariant) {
+        frag.appendChild(document.createTextNode(rest));
+        break;
+      }
       const head = rest.slice(0, idx);
       if (head) {
         frag.appendChild(document.createTextNode(head));
@@ -1239,12 +1428,12 @@ async function enhancePathReferencesInline(container, content) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'path-inline-reference';
-      btn.textContent = foundRef;
+      btn.textContent = foundRef.ref;
       btn.addEventListener('click', () => {
-        void openPathPreviewByReference(foundRef);
+        void openPathPreviewByReference(foundRef.ref);
       });
       frag.appendChild(btn);
-      rest = rest.slice(idx + foundRef.length);
+      rest = rest.slice(idx + matchedVariant.length);
     }
     if (rest) {
       frag.appendChild(document.createTextNode(rest));
@@ -1279,6 +1468,63 @@ async function canPreviewPathRef(ref) {
   })();
   state.pathPreviewPending[normalized] = pending;
   return pending;
+}
+
+function escapeHtmlAttribute(value) {
+  return escapeHtml(value).replace(/`/g, '&#96;');
+}
+
+function isMarkdownPreview(artifact) {
+  const mime = String(artifact?.mime_type || '').toLowerCase();
+  return artifact?.type === 'report' || mime.includes('markdown') || String(artifact?.path || '').toLowerCase().endsWith('.md');
+}
+
+function isHtmlPreview(artifact) {
+  const mime = String(artifact?.mime_type || '').toLowerCase();
+  const path = String(artifact?.path || '').toLowerCase();
+  return mime.includes('html') || path.endsWith('.html') || path.endsWith('.htm');
+}
+
+function isCodePreview(artifact) {
+  const mime = String(artifact?.mime_type || '').toLowerCase();
+  const path = String(artifact?.path || '').toLowerCase();
+  return artifact?.type === 'code' || mime.includes('json') || mime.includes('javascript') || mime.includes('python') || /\.(py|js|ts|tsx|jsx|css|scss|json|yaml|yml|sh|bat|ps1|toml|ini|sql|xml)$/.test(path);
+}
+
+function resolveArtifactContentUrl(artifact) {
+  if (!artifact) {
+    return '';
+  }
+  if (artifact.content_url) {
+    return artifact.content_url.startsWith('http') ? artifact.content_url : `${state.apiBase}${artifact.content_url}`;
+  }
+  if (artifact.file_id) {
+    return `${state.apiBase}/files/${encodeURIComponent(artifact.file_id)}`;
+  }
+  if (artifact.type === 'image' && artifact.path) {
+    return `${state.apiBase}/workspace/file?path=${encodeURIComponent(artifact.path)}`;
+  }
+  return artifact.url || '';
+}
+
+function renderArtifactPreviewBody(artifact) {
+  if (artifact.type === 'diagram') {
+    return null;
+  }
+  if (artifact.type === 'image') {
+    const src = resolveArtifactContentUrl(artifact);
+    return src ? `<img class="preview-image" src="${escapeHtmlAttribute(src)}" alt="${escapeHtmlAttribute(artifact.title || 'preview')}" />` : '<div class="empty">????????</div>';
+  }
+  if (isMarkdownPreview(artifact)) {
+    return `<div class="preview-markdown">${renderMarkdown(artifact.content || artifact.preview_text || '')}</div>`;
+  }
+  if (isHtmlPreview(artifact)) {
+    return `<iframe id="preview-html-frame" class="preview-html-frame" sandbox=""></iframe>`;
+  }
+  if (isCodePreview(artifact)) {
+    return `<pre class="pane-content preview-code"><code>${escapeHtml(artifact.content || '')}</code></pre>`;
+  }
+  return `<pre class="pane-content">${escapeHtml(artifact.content || '')}</pre>`;
 }
 
 function escapeHtml(value) {
@@ -1355,7 +1601,7 @@ function renderMarkdown(input) {
 }
 
 function renderSystemMessage(text) {
-  state.messages.push({ id: `system-${Date.now()}`, role: 'system', content: text, attachments: [] });
+  state.messages.push({ id: `system-${Date.now()}`, role: 'system', content: text, attachments: [], interruptCard: null });
   renderTranscript();
 }
 
@@ -1457,94 +1703,257 @@ function renderAttachments() {
   }
 }
 
-function upsertInterrupt(interrupt) {
-  state.pendingInterrupt = interrupt;
-  const existing = state.interrupts.findIndex(item => item.interrupt_id === interrupt.interrupt_id);
-  if (existing >= 0) {
-    state.interrupts[existing] = interrupt;
-  } else {
-    state.interrupts.push(interrupt);
-  }
-  renderInterrupts();
+function attachInterruptToMessage(interrupt) {
+  const target = resolveInterruptAnchor(interrupt);
+  target.interruptCard = {
+    ...interrupt,
+    anchor_message_id: target.id,
+    status: interrupt.status || 'pending',
+  };
+  syncPendingInterrupt();
 }
 
-function renderInterrupts() {
-  ui.interrupts.innerHTML = '';
-
-  for (const interrupt of state.interrupts) {
-    const card = document.createElement('div');
-    card.className = 'interrupt-card inline-hitl';
-    card.innerHTML = `<strong>${interrupt.kind}</strong><div>${interrupt.prompt}</div>`;
-    if (interrupt.description) {
-      const desc = document.createElement('div');
-      desc.className = 'interrupt-desc';
-      desc.textContent = interrupt.description;
-      card.appendChild(desc);
+function resolveInterruptAnchor(interrupt) {
+  if (interrupt.anchor_message_id) {
+    const anchored = state.messages.find(message => message.id === interrupt.anchor_message_id);
+    if (anchored) {
+      return anchored;
     }
-    if (interrupt.resultSummary) {
-      const summary = document.createElement('div');
-      summary.className = 'interrupt-result';
-      summary.textContent = interrupt.resultSummary;
-      card.appendChild(summary);
-      ui.interrupts.appendChild(card);
+  }
+  return ensurePendingAssistantMessage(interrupt.run_id || state.activeRunId);
+}
+
+function updateInterruptCard(interruptId, updater) {
+  for (const message of state.messages) {
+    if (!message.interruptCard || message.interruptCard.interrupt_id !== interruptId) {
       continue;
     }
+    message.interruptCard = updater(message.interruptCard);
+    syncPendingInterrupt();
+    return message.interruptCard;
+  }
+  return null;
+}
 
-    if (interrupt.kind === 'confirm') {
-      const row = document.createElement('div');
-      row.className = 'composer-actions';
-
-      const approve = document.createElement('button');
-      approve.textContent = '同意';
-      approve.className = 'btn primary';
-      approve.addEventListener('click', () => {
-        void respondInterrupt(interrupt, true);
-      });
-
-      const reject = document.createElement('button');
-      reject.className = 'btn ghost';
-      reject.textContent = '拒绝';
-      reject.addEventListener('click', () => {
-        void respondInterrupt(interrupt, false);
-      });
-
-      row.append(approve, reject);
-      card.appendChild(row);
+function syncPendingInterrupt() {
+  state.pendingInterrupt = null;
+  for (let i = state.messages.length - 1; i >= 0; i -= 1) {
+    const card = state.messages[i].interruptCard;
+    if (card && !['resolved', 'cancelled', 'expired'].includes(card.status || 'pending')) {
+      state.pendingInterrupt = card;
+      return;
     }
-
-    if (interrupt.kind === 'single_select') {
-      const row = document.createElement('div');
-      row.className = 'composer-actions';
-      for (const option of interrupt.options || []) {
-        const choose = document.createElement('button');
-        choose.className = 'btn ghost';
-        choose.textContent = option.label || option.id || '选择';
-        choose.addEventListener('click', () => {
-          void respondInterrupt(interrupt, option.id ?? option.value ?? option.label ?? true);
-        });
-        row.appendChild(choose);
-      }
-      card.appendChild(row);
-    }
-
-    if (interrupt.kind === 'form') {
-      const row = document.createElement('div');
-      row.className = 'composer-actions';
-      const submit = document.createElement('button');
-      submit.className = 'btn primary';
-      submit.textContent = '提交表单';
-      submit.addEventListener('click', () => {
-        void respondInterrupt(interrupt, { submitted: true });
-      });
-      row.appendChild(submit);
-      card.appendChild(row);
-    }
-
-    ui.interrupts.appendChild(card);
   }
 }
 
-function openArtifactPreview(artifact) {
+function summarizeInterruptValue(value) {
+  if (value === true) {
+    return '?????';
+  }
+  if (value === false) {
+    return '???';
+  }
+  if (Array.isArray(value)) {
+    return `????${value.join('?')}`;
+  }
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value)
+      .filter(([, item]) => item != null && item !== '' && item !== false)
+      .map(([key, item]) => `${key}: ${String(item)}`);
+    return entries.length > 0 ? `????${entries.join('?')}` : '???';
+  }
+  if (value == null || value === '') {
+    return '???';
+  }
+  return `????${String(value)}`;
+}
+
+function renderMessageInterrupt(container, message) {
+  if (!message.interruptCard) {
+    return;
+  }
+  container.appendChild(buildInterruptCard(message.interruptCard));
+}
+function renderMessageArtifactReferences(container, message) {
+  if (!Array.isArray(message.artifactReferences) || message.artifactReferences.length === 0) {
+    return;
+  }
+  const wrap = document.createElement('div');
+  wrap.className = 'message-artifact-references';
+  for (const ref of message.artifactReferences) {
+    const artifact = state.artifacts.find(item => item.artifact_id === ref.artifact_id) || ref;
+    if (artifact.type === 'image') {
+      const src = resolveArtifactContentUrl(artifact);
+      if (src) {
+        const img = document.createElement('img');
+        img.className = 'artifact-inline-image';
+        img.src = src;
+        img.alt = artifact.title || 'image';
+        img.loading = 'lazy';
+        img.addEventListener('click', () => {
+          void openArtifactPreview(artifact);
+        });
+        wrap.appendChild(img);
+        continue;
+      }
+    }
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'artifact-reference';
+    btn.textContent = artifact.title || artifact.artifact_id || 'artifact';
+    btn.addEventListener('click', () => {
+      void openArtifactPreview(artifact);
+    });
+    wrap.appendChild(btn);
+  }
+  container.appendChild(wrap);
+}
+
+
+function buildInterruptCard(interrupt) {
+  const card = document.createElement('div');
+  card.className = 'interrupt-card inline-hitl';
+  const title = document.createElement('strong');
+  title.textContent = interrupt.prompt || interrupt.kind;
+  card.appendChild(title);
+  if (interrupt.description) {
+    const desc = document.createElement('div');
+    desc.className = 'interrupt-desc';
+    desc.textContent = interrupt.description;
+    card.appendChild(desc);
+  }
+  if (interrupt.resultSummary) {
+    const summary = document.createElement('div');
+    summary.className = 'interrupt-result';
+    summary.textContent = interrupt.resultSummary;
+    card.appendChild(summary);
+    return card;
+  }
+  if (interrupt.kind === 'confirm') {
+    const row = document.createElement('div');
+    row.className = 'composer-actions';
+    const approve = document.createElement('button');
+    approve.textContent = '??';
+    approve.className = 'btn primary';
+    approve.disabled = interrupt.status === 'submitting';
+    approve.addEventListener('click', () => {
+      void respondInterrupt(interrupt, true);
+    });
+    const reject = document.createElement('button');
+    reject.className = 'btn ghost';
+    reject.textContent = '??';
+    reject.disabled = interrupt.status === 'submitting';
+    reject.addEventListener('click', () => {
+      void respondInterrupt(interrupt, false);
+    });
+    row.append(approve, reject);
+    card.appendChild(row);
+    return card;
+  }
+  if (interrupt.kind === 'single_select') {
+    const row = document.createElement('div');
+    row.className = 'composer-actions';
+    for (const option of interrupt.options || []) {
+      const choose = document.createElement('button');
+      choose.className = 'btn ghost';
+      choose.textContent = option.label || option.id || '??';
+      choose.disabled = interrupt.status === 'submitting';
+      choose.addEventListener('click', () => {
+        void respondInterrupt(interrupt, option.id ?? option.value ?? option.label ?? true);
+      });
+      row.appendChild(choose);
+    }
+    card.appendChild(row);
+    return card;
+  }
+  if (interrupt.kind === 'form') {
+    const form = document.createElement('form');
+    form.className = 'interrupt-form';
+    for (const field of interrupt.fields || []) {
+      const fieldWrap = document.createElement('label');
+      fieldWrap.className = 'interrupt-field';
+      const key = field.name || field.id || field.label || `field_${Math.random().toString(16).slice(2)}`;
+      const label = document.createElement('span');
+      label.textContent = field.label || key;
+      fieldWrap.appendChild(label);
+      let input;
+      if (Array.isArray(field.options) && field.options.length > 0) {
+        input = document.createElement('select');
+        for (const option of field.options) {
+          const optionEl = document.createElement('option');
+          optionEl.value = option.value ?? option.id ?? option.label ?? '';
+          optionEl.textContent = option.label ?? option.value ?? option.id ?? '';
+          if (field.default != null && optionEl.value === String(field.default)) {
+            optionEl.selected = true;
+          }
+          input.appendChild(optionEl);
+        }
+      } else if (field.type === 'textarea') {
+        input = document.createElement('textarea');
+        input.value = field.default || '';
+      } else if (field.type === 'checkbox') {
+        input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked = Boolean(field.default);
+      } else {
+        input = document.createElement('input');
+        input.type = 'text';
+        input.value = field.default || '';
+      }
+      input.name = key;
+      input.disabled = interrupt.status === 'submitting';
+      fieldWrap.appendChild(input);
+      form.appendChild(fieldWrap);
+    }
+    const row = document.createElement('div');
+    row.className = 'composer-actions';
+    const submit = document.createElement('button');
+    submit.className = 'btn primary';
+    submit.type = 'submit';
+    submit.textContent = '??';
+    submit.disabled = interrupt.status === 'submitting';
+    row.appendChild(submit);
+    form.appendChild(row);
+    form.addEventListener('submit', event => {
+      event.preventDefault();
+      const value = {};
+      for (const element of form.elements) {
+        if (!element.name) {
+          continue;
+        }
+        if (element.type === 'checkbox') {
+          value[element.name] = element.checked;
+        } else {
+          value[element.name] = element.value;
+        }
+      }
+      void respondInterrupt(interrupt, value);
+    });
+    card.appendChild(form);
+  }
+  return card;
+}
+
+async function hydrateArtifactPreview(artifact) {
+  if (!artifact || artifact.content || artifact.type === 'diagram' || artifact.type === 'image' || !artifact.path) {
+    return artifact;
+  }
+  try {
+    const preview = await request(`/workspace/preview?path=${encodeURIComponent(artifact.path)}`);
+    return {
+      ...artifact,
+      type: artifact.type || (preview.viewer_type === 'code' ? 'code' : 'file'),
+      title: artifact.title || preview.title || preview.path,
+      mime_type: artifact.mime_type || preview.mime_type,
+      content: preview.content,
+      path: preview.path,
+    };
+  } catch {
+    return artifact;
+  }
+}
+
+async function openArtifactPreview(artifact) {
   if (!artifact) {
     return;
   }
@@ -1552,19 +1961,33 @@ function openArtifactPreview(artifact) {
   if (!artifactId) {
     return;
   }
-  const existing = state.artifacts.find(item => item.artifact_id === artifactId);
-  if (!existing) {
-    state.artifacts.unshift({ ...artifact, artifact_id: artifactId });
+  const hydrated = await hydrateArtifactPreview({ ...artifact, artifact_id: artifactId });
+  const existingIndex = state.artifacts.findIndex(item => item.artifact_id === artifactId);
+  if (existingIndex >= 0) {
+    state.artifacts[existingIndex] = { ...state.artifacts[existingIndex], ...hydrated, artifact_id: artifactId };
+  } else {
+    state.artifacts.unshift({ ...hydrated, artifact_id: artifactId });
   }
   state.previewArtifactId = artifactId;
   state.previewDiagramMode = 'rendered';
+  state.previewCollapsed = false;
   state.rightPaneMode = 'preview';
   renderRightPane();
 }
 
 function closeArtifactPreview() {
   state.previewArtifactId = null;
-  state.rightPaneMode = 'inspector';
+  state.previewCollapsed = false;
+  state.rightPaneMode = 'hidden';
+  renderRightPane();
+}
+
+function togglePreviewCollapse() {
+  if (!state.previewArtifactId) {
+    return;
+  }
+  state.previewCollapsed = !state.previewCollapsed;
+  state.rightPaneMode = 'preview';
   renderRightPane();
 }
 
@@ -1572,130 +1995,117 @@ function renderRightPane() {
   if (!ui?.rightPane) {
     return;
   }
+  const shell = app?.querySelector('.app-shell');
+  const hasPreview = state.rightPaneMode === 'preview' && !!state.previewArtifactId;
+  shell?.classList.toggle('preview-open', hasPreview && !state.previewCollapsed);
+  shell?.classList.toggle('preview-collapsed', hasPreview && state.previewCollapsed);
+  ui.rightPane.classList.toggle('hidden-pane', !hasPreview);
+  ui.rightPane.classList.toggle('collapsed', hasPreview && state.previewCollapsed);
 
-  if (state.rightPaneMode === 'preview' && state.previewArtifactId) {
-    const artifact = state.artifacts.find(item => item.artifact_id === state.previewArtifactId);
-    if (artifact) {
-      const isDiagram = artifact.type === 'diagram';
-      const isSourceMode = state.previewDiagramMode === 'source';
-      const previewBody = isDiagram
-        ? `
-          <div class="mermaid-preview-mode">
-            <button id="toggle-diagram-view" type="button" class="btn ghost">${isSourceMode ? '查看渲染' : '查看源码'}</button>
-            <button id="copy-mermaid-source" type="button" class="btn ghost">复制源码</button>
-          </div>
-          ${isSourceMode
-            ? `<pre class="mermaid-source">${artifact.preview_text || ''}</pre>`
-            : `<div id="preview-mermaid-rendered" class="mermaid-rendered mermaid-rendered-pane"></div>`}
-        `
-        : `
-          <div class="pane-path">${artifact.path || ''}</div>
-          ${artifact.content ? `<pre class="pane-content">${escapeHtml(artifact.content)}</pre>` : ''}
-        `;
-      ui.rightPane.innerHTML = `
-        <div class="pane-head">
-          <strong>预览</strong>
-          <button id="close-preview" class="btn ghost">关闭</button>
-        </div>
-        <div class="pane-block">
-          <div class="pane-title">${artifact.title || artifact.artifact_id}</div>
-          <div class="pane-meta">${artifact.type || 'file'}${artifact.mime_type ? ` · ${artifact.mime_type}` : ''}</div>
-          ${previewBody}
-        </div>
-      `;
-      const closeBtn = document.getElementById('close-preview');
-      if (closeBtn) {
-        closeBtn.addEventListener('click', () => closeArtifactPreview());
-      }
-      if (isDiagram) {
-        const toggleBtn = document.getElementById('toggle-diagram-view');
-        if (toggleBtn) {
-          toggleBtn.addEventListener('click', () => {
-            state.previewDiagramMode = state.previewDiagramMode === 'source' ? 'rendered' : 'source';
-            renderRightPane();
-          });
-        }
-        const copyBtn = document.getElementById('copy-mermaid-source');
-        if (copyBtn) {
-          copyBtn.addEventListener('click', async () => {
-            try {
-              await navigator.clipboard.writeText(String(artifact.preview_text || ''));
-            } catch {
-              // best effort
-            }
-          });
-        }
-        if (!isSourceMode) {
-          const target = document.getElementById('preview-mermaid-rendered');
-          void renderMermaidInto(target, String(artifact.preview_text || 'graph TD;A-->B'));
-        }
-      }
-      return;
-    }
+  if (!hasPreview) {
+    ui.rightPane.innerHTML = '';
+    return;
   }
 
-  state.rightPaneMode = 'inspector';
-  const recent = state.artifacts.slice(0, 5);
-  const artifactList = recent.length
-    ? recent.map(item => `<button type="button" class="pane-link" data-artifact-id="${item.artifact_id}">${item.title || item.artifact_id}</button>`).join('')
-    : '<div class="empty">暂无对象。</div>';
+  const artifact = state.artifacts.find(item => item.artifact_id === state.previewArtifactId);
+  if (!artifact) {
+    ui.rightPane.innerHTML = '';
+    return;
+  }
+
+  if (state.previewCollapsed) {
+    ui.rightPane.innerHTML = `
+      <button id="preview-handle" type="button" class="preview-handle" title="Expand preview">Open</button>
+    `;
+    document.getElementById('preview-handle')?.addEventListener('click', () => togglePreviewCollapse());
+    return;
+  }
+
+  const isDiagram = artifact.type === 'diagram';
+  const isSourceMode = state.previewDiagramMode === 'source';
+  const previewBody = isDiagram
+    ? `
+      <div class="mermaid-preview-mode">
+        <button id="toggle-diagram-view" type="button" class="btn ghost">${isSourceMode ? 'Rendered' : 'Source'}</button>
+        <button id="copy-mermaid-source" type="button" class="btn ghost">Copy source</button>
+      </div>
+      ${isSourceMode
+        ? `<pre class="mermaid-source">${escapeHtml(artifact.preview_text || '')}</pre>`
+        : `<div id="preview-mermaid-rendered" class="mermaid-rendered mermaid-rendered-pane"></div>`}
+    `
+    : renderArtifactPreviewBody(artifact);
 
   ui.rightPane.innerHTML = `
-    <div class="pane-head"><strong>检查器</strong></div>
-    <div class="pane-block">
-      <div class="pane-section-title">对象</div>
-      ${artifactList}
+    <div class="pane-head">
+      <strong>Preview</strong>
+      <div class="pane-actions">
+        <button id="collapse-preview" class="btn ghost" type="button">Collapse</button>
+        <button id="close-preview" class="btn ghost" type="button">Close</button>
+      </div>
     </div>
     <div class="pane-block">
-      <div class="pane-section-title">状态</div>
-      <div>运行：${state.runState}</div>
-      <div>活动任务：${state.activeTaskCount}</div>
-      <div>待处理交互：${state.pendingInterrupt ? '是' : '否'}</div>
+      <div class="pane-title">${artifact.title || artifact.artifact_id}</div>
+      <div class="pane-meta">${artifact.type || 'file'}${artifact.mime_type ? ` ? ${artifact.mime_type}` : ''}</div>
+      ${artifact.path ? `<div class="pane-path">${escapeHtml(artifact.path)}</div>` : ''}
+      ${previewBody || ''}
     </div>
-    <div class="pane-block">
-      <div class="pane-section-title">技能</div>
-      <div>${state.activeSkills.length ? state.activeSkills.join(', ') : '暂无激活技能。'}</div>
-    </div>
-    <details class="pane-details">
-      <summary>更多</summary>
-      <div>模式：${state.rightPaneMode}</div>
-    </details>
   `;
-  for (const btn of ui.rightPane.querySelectorAll('.pane-link')) {
-    btn.addEventListener('click', () => {
-      const artifact = state.artifacts.find(item => item.artifact_id === btn.dataset.artifactId);
-      openArtifactPreview(artifact);
-    });
+
+  document.getElementById('close-preview')?.addEventListener('click', () => closeArtifactPreview());
+  document.getElementById('collapse-preview')?.addEventListener('click', () => togglePreviewCollapse());
+
+  if (isHtmlPreview(artifact)) {
+    const frame = document.getElementById('preview-html-frame');
+    if (frame) {
+      frame.srcdoc = artifact.content || '';
+    }
+  }
+  if (isDiagram) {
+    const toggleBtn = document.getElementById('toggle-diagram-view');
+    if (toggleBtn) {
+      toggleBtn.addEventListener('click', () => {
+        state.previewDiagramMode = state.previewDiagramMode === 'source' ? 'rendered' : 'source';
+        renderRightPane();
+      });
+    }
+    const copyBtn = document.getElementById('copy-mermaid-source');
+    if (copyBtn) {
+      copyBtn.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(String(artifact.preview_text || ''));
+        } catch {
+          // best effort
+        }
+      });
+    }
+    if (!isSourceMode) {
+      const target = document.getElementById('preview-mermaid-rendered');
+      void renderMermaidInto(target, String(artifact.preview_text || 'graph TD;A-->B'));
+    }
   }
 }
 
 async function respondInterrupt(interrupt, value) {
-  state.interrupts = state.interrupts.map(item => (
-    item.interrupt_id === interrupt.interrupt_id
-      ? { ...item, status: 'submitting' }
-      : item
-  ));
-  renderInterrupts();
+  updateInterruptCard(interrupt.interrupt_id, item => ({ ...item, status: 'submitting' }));
+  renderTranscript();
   try {
     await request(`/sessions/${interrupt.session_id}/interrupts/${interrupt.interrupt_id}/respond`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ kind: interrupt.kind, value }),
     });
-    state.interrupts = state.interrupts.map(item => (
-      item.interrupt_id === interrupt.interrupt_id
-        ? { ...item, status: 'resolved', resultSummary: `Resolved: ${String(value)}` }
-        : item
-    ));
-    renderInterrupts();
+    updateInterruptCard(interrupt.interrupt_id, item => ({
+      ...item,
+      status: 'resolved',
+      resultSummary: summarizeInterruptValue(value),
+    }));
+    renderTranscript();
+    renderRightPane();
   } catch (error) {
-    state.interrupts = state.interrupts.map(item => (
-      item.interrupt_id === interrupt.interrupt_id
-        ? { ...item, status: 'pending' }
-        : item
-    ));
+    updateInterruptCard(interrupt.interrupt_id, item => ({ ...item, status: 'pending' }));
     renderSystemMessage(`Interrupt response failed: ${error.message}`);
-    renderInterrupts();
+    renderTranscript();
+    renderRightPane();
   }
 }
 
@@ -1753,6 +2163,7 @@ function bootstrap() {
   bindUiHandlers();
   updateStatusBar();
   renderRightPane();
+  window.__nanobotBootState = 'bootstrapped';
   void refreshSessions();
 }
 

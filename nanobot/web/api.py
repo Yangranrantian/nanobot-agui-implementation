@@ -96,5 +96,15 @@ def create_app(*, runtime: WebRuntime | None = None, workspace: Path | None = No
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @app.get("/workspace/file")
+    async def serve_workspace_file(path: str = Query(...)):
+        try:
+            target = app.state.runtime._resolve_preview_target(app.state.runtime._normalize_preview_reference(path))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if target is None:
+            raise HTTPException(status_code=404, detail="File not found")
+        return FileResponse(path=target)
+
     return app
 

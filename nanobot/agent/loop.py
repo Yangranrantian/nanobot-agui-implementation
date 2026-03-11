@@ -183,6 +183,45 @@ class AgentLoop:
         return re.sub(r"<think>[\s\S]*?</think>", "", text).strip() or None
 
     @staticmethod
+    def _file_artifact_type(path: Path) -> str:
+        suffix = path.suffix.lower()
+        if suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"}:
+            return "image"
+        if suffix in {".mmd", ".mermaid"}:
+            return "diagram"
+        if suffix in {".md", ".txt"}:
+            return "report"
+        if suffix in {".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".scss", ".json", ".yaml", ".yml", ".toml", ".ini", ".csv", ".sql", ".xml", ".sh", ".bat", ".ps1"}:
+            return "code"
+        return "file"
+
+    def _artifact_from_tool_result(self, tool_name: str, tool_args: Any, result: Any) -> dict[str, Any] | None:
+        if tool_name not in {"read_file", "write_file", "edit_file", "image_inspect"}:
+            return None
+        if not isinstance(tool_args, dict):
+            return None
+        raw_path = tool_args.get("path")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            return None
+        result_text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+        lowered = result_text.lower()
+        if lowered.startswith("error:") or lowered.startswith("warning:"):
+            return None
+        file_path = Path(raw_path).expanduser()
+        if not file_path.is_absolute():
+            file_path = (self.workspace / file_path)
+        resolved = file_path.resolve()
+        return {
+            "artifact_id": f"path:{resolved.as_posix()}",
+            "type": self._file_artifact_type(resolved),
+            "title": resolved.name,
+            "source": "generated" if tool_name == "write_file" else "workspace",
+            "path": str(resolved),
+            "preview_text": resolved.name,
+            "metadata": {"tool_name": tool_name},
+        }
+
+    @staticmethod
     def _tool_hint(tool_calls: list) -> str:
         """Format tool calls as concise hint, e.g. 'web_search("query")'."""
         def _fmt(tc):
@@ -328,17 +367,28 @@ class AgentLoop:
                         raise
                     duration_ms = int((time.perf_counter() - started_at) * 1000)
                     result_preview = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+                    artifact = self._artifact_from_tool_result(tool_call.name, tool_call.arguments, result)
+                    linked_artifact_ids = [artifact["artifact_id"]] if artifact else []
                     await emit_event(
                         on_event,
                         make_event(
                             "tool.completed",
                             payload={
                                 **base_payload,
+                                "linked_artifact_ids": linked_artifact_ids,
                                 "result_preview": result_preview[:200],
                                 "duration_ms": duration_ms,
                             },
                         ),
                     )
+                    if artifact:
+                        await emit_event(
+                            on_event,
+                            make_event(
+                                "artifact.created" if tool_call.name == "write_file" else "artifact.referenced",
+                                artifact=artifact,
+                            ),
+                        )
                     messages = self.context.add_tool_result(messages, tool_call.id, tool_call.name, result)
             else:
                 clean = self._strip_think(response.content)

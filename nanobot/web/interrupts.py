@@ -17,6 +17,7 @@ class InterruptRequest(BaseModel):
 class InterruptEnvelope(InterruptRequest):
     interrupt_id: str
     session_id: str
+    anchor_message_id: str | None = None
 
 
 class InterruptResponse(BaseModel):

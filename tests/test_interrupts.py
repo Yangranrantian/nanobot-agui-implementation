@@ -28,7 +28,7 @@ async def test_agent_loop_can_request_interrupt_and_wait(tmp_path):
     loop = _make_loop(tmp_path)
     runtime = WebRuntime(tmp_path, agent_loop=loop)
 
-    async def fake_run(initial_messages, on_progress=None, on_event=None):
+    async def fake_run(initial_messages, on_progress=None, on_event=None, emit_progress_text=True):
         response = await loop.request_interrupt(
             "web:sess_interrupt",
             InterruptRequest(kind="confirm", prompt="Approve?"),
@@ -87,7 +87,7 @@ async def test_dispatch_message_persists_history_for_runtime_reader(tmp_path):
     loop = _make_loop(tmp_path)
     runtime = WebRuntime(tmp_path, agent_loop=loop)
 
-    async def fake_run(initial_messages, on_progress=None, on_event=None):
+    async def fake_run(initial_messages, on_progress=None, on_event=None, emit_progress_text=True):
         return "saved reply", [], [
             *initial_messages,
             {"role": "assistant", "content": "saved reply"},
@@ -274,3 +274,16 @@ def test_interrupt_request_supports_single_select_form_and_artifact_context():
 
 
 
+
+def test_interrupt_envelope_supports_anchor_message_id():
+    from nanobot.web.interrupts import InterruptEnvelope
+
+    envelope = InterruptEnvelope(
+        interrupt_id="int_1",
+        session_id="sess_1",
+        kind="confirm",
+        prompt="Approve command?",
+        anchor_message_id="msg_1",
+    )
+
+    assert envelope.anchor_message_id == "msg_1"
