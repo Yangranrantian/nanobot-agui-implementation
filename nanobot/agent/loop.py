@@ -30,6 +30,7 @@ from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
 from nanobot.session.manager import Session, SessionManager
 from nanobot.web.events import emit_event, make_event
+from nanobot.web.interrupts import InterruptRequest
 
 if TYPE_CHECKING:
     from nanobot.config.schema import ChannelsConfig, ExecToolConfig
@@ -290,12 +291,122 @@ class AgentLoop:
         on_progress: Callable[..., Awaitable[None]] | None = None,
         on_event: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
         emit_progress_text: bool = True,
+        session_key: str | None = None,
+        run_id: str | None = None,
     ) -> tuple[str | None, list[str], list[dict]]:
         """Run the agent iteration loop. Returns (final_content, tools_used, messages)."""
         messages = initial_messages
         iteration = 0
         final_content = None
         tools_used: list[str] = []
+        async def _guard_tool_call(tool_call) -> dict[str, Any] | None:
+            tool_args = dict(tool_call.arguments) if isinstance(tool_call.arguments, dict) else {}
+            if self._interrupt_handler is None or not session_key:
+                return tool_args
+
+            request: InterruptRequest | None = None
+
+            if tool_call.name == "exec":
+                command_preview = str(tool_args.get("command") or tool_args.get("cmd") or "").strip()
+                request = InterruptRequest(
+                    kind="confirm",
+                    prompt="\u6267\u884c\u547d\u4ee4\u524d\u786e\u8ba4",
+                    run_id=run_id,
+                    title="\u6267\u884c\u547d\u4ee4\u524d\u786e\u8ba4",
+                    description=(
+                        f"\u9700\u8981\u5148\u6267\u884c\u4e00\u6761\u547d\u4ee4\uff0c\u6211\u4f1a\u5728\u4f60\u786e\u8ba4\u540e\u7ee7\u7eed?\n{command_preview}"
+                        if command_preview
+                        else "\u9700\u8981\u5148\u6267\u884c\u4e00\u6761\u547d\u4ee4\uff0c\u6211\u4f1a\u5728\u4f60\u786e\u8ba4\u540e\u7ee7\u7eed?"
+                    ),
+                    severity="warning",
+                    confirm_label="\u7ee7\u7eed\u6267\u884c",
+                    cancel_label="\u53d6\u6d88",
+                    default_value=False,
+                )
+            elif tool_call.name in {"write_file", "edit_file"}:
+                raw_path = str(tool_args.get("path") or "").strip()
+                if not raw_path:
+                    request = InterruptRequest(
+                        kind="form",
+                        prompt="\u8865\u5145\u6587\u4ef6\u8def\u5f84",
+                        run_id=run_id,
+                        title="\u8865\u5145\u6587\u4ef6\u8def\u5f84",
+                        description="\u7ee7\u7eed\u5199\u5165\u524d\u8fd8\u7f3a\u5c11\u76ee\u6807\u6587\u4ef6\u8def\u5f84\u3002",
+                        severity="info",
+                        confirm_label="\u63d0\u4ea4\u5e76\u7ee7\u7eed",
+                        cancel_label="\u53d6\u6d88",
+                        fields=[{"name": "path", "label": "\u6587\u4ef6\u8def\u5f84", "type": "text", "required": True}],
+                    )
+                else:
+                    target = Path(raw_path).expanduser()
+                    if not target.is_absolute():
+                        target = self.workspace / target
+                    target = target.resolve()
+                    if target.exists():
+                        request = InterruptRequest(
+                            kind="confirm",
+                            prompt="\u8986\u76d6\u6587\u4ef6\u524d\u786e\u8ba4",
+                            run_id=run_id,
+                            title="\u8986\u76d6\u6587\u4ef6\u524d\u786e\u8ba4",
+                            description=f"\u76ee\u6807\u6587\u4ef6\u5df2\u5b58\u5728\uff0c\u786e\u8ba4\u540e\u6211\u4f1a\u8986\u76d6\u539f\u6587\u4ef6\u3002\n{target}",
+                            severity="warning",
+                            confirm_label="\u786e\u8ba4\u8986\u76d6",
+                            cancel_label="\u53d6\u6d88",
+                            default_value=False,
+                        )
+            elif tool_call.name in {"read_file", "list_dir"}:
+                raw_path = str(tool_args.get("path") or "").strip()
+                if not raw_path:
+                    options: list[dict[str, str]] = []
+                    seen: set[str] = set()
+                    candidates = [
+                        ("\u5de5\u4f5c\u7a7a\u95f4\u6839\u76ee\u5f55", str(self.workspace)),
+                        ("\u8bb0\u5fc6\u76ee\u5f55", str(self.workspace / "memory")),
+                        ("\u684c\u9762", str(Path.home() / "Desktop")),
+                    ]
+                    for label, value in candidates:
+                        target = Path(value).expanduser()
+                        if not target.exists():
+                            continue
+                        normalized_value = str(target)
+                        if normalized_value in seen:
+                            continue
+                        seen.add(normalized_value)
+                        options.append({"label": label, "value": normalized_value})
+                    if options:
+                        request = InterruptRequest(
+                            kind="single_select",
+                            prompt="\u9009\u62e9\u8bfb\u53d6\u4f4d\u7f6e",
+                            run_id=run_id,
+                            title="\u9009\u62e9\u8bfb\u53d6\u4f4d\u7f6e",
+                            description="\u7ee7\u7eed\u524d\u8bf7\u9009\u62e9\u8981\u8bfb\u53d6\u7684\u4f4d\u7f6e\u3002",
+                            severity="info",
+                            confirm_label="\u786e\u8ba4\u9009\u62e9",
+                            cancel_label="\u53d6\u6d88",
+                            options=options,
+                        )
+
+            if request is None:
+                return tool_args
+
+            response = await self.request_interrupt(session_key, request, on_event=on_event)
+
+            if request.kind == "confirm":
+                return tool_args if response.value is True else None
+            if request.kind == "single_select":
+                if response.value:
+                    tool_args["path"] = str(response.value)
+                    return tool_args
+                return None
+            if request.kind == "form":
+                if isinstance(response.value, dict):
+                    for key, value in response.value.items():
+                        if value not in (None, ""):
+                            tool_args[str(key)] = value
+                    return tool_args if tool_args.get("path") else None
+                return None
+
+            return tool_args
 
         while iteration < self.max_iterations:
             iteration += 1
@@ -338,7 +449,13 @@ class AgentLoop:
 
                 for tool_call in response.tool_calls:
                     tools_used.append(tool_call.name)
-                    args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
+                    guarded_args = await _guard_tool_call(tool_call)
+                    if guarded_args is None:
+                        final_content = "\u64cd\u4f5c\u5df2\u53d6\u6d88\u3002"
+                        messages = self.context.add_assistant_message(messages, final_content)
+                        await emit_event(on_event, make_event("message.completed", content=final_content))
+                        return final_content, tools_used, messages
+                    args_str = json.dumps(guarded_args, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
                     started_at = time.perf_counter()
                     base_payload = {
@@ -350,7 +467,7 @@ class AgentLoop:
                     }
                     await emit_event(on_event, make_event("tool.started", payload=base_payload))
                     try:
-                        result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                        result = await self.tools.execute(tool_call.name, guarded_args)
                     except Exception as exc:
                         duration_ms = int((time.perf_counter() - started_at) * 1000)
                         await emit_event(
@@ -367,7 +484,7 @@ class AgentLoop:
                         raise
                     duration_ms = int((time.perf_counter() - started_at) * 1000)
                     result_preview = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
-                    artifact = self._artifact_from_tool_result(tool_call.name, tool_call.arguments, result)
+                    artifact = self._artifact_from_tool_result(tool_call.name, guarded_args, result)
                     linked_artifact_ids = [artifact["artifact_id"]] if artifact else []
                     await emit_event(
                         on_event,
@@ -523,7 +640,7 @@ class AgentLoop:
                 history=history,
                 current_message=msg.content, channel=channel, chat_id=chat_id,
             )
-            final_content, _, all_msgs = await self._run_agent_loop(messages)
+            final_content, _, all_msgs = await self._run_agent_loop(messages, session_key=key)
             self._save_turn(session, all_msgs, 1 + len(history), msg.metadata.get("attachments"))
             self.sessions.save(session)
             return OutboundMessage(channel=channel, chat_id=chat_id,
@@ -620,6 +737,8 @@ class AgentLoop:
             on_progress=on_progress or _bus_progress,
             on_event=on_event,
             emit_progress_text=(msg.channel != "web"),
+            session_key=key,
+            run_id=run_id,
         )
 
         if final_content is None:

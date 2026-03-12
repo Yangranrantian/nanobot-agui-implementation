@@ -121,6 +121,31 @@ def test_agui_web_right_pane_supports_on_demand_preview_mode():
     assert ".right-pane" in styles
 
 
+def test_agui_web_session_switch_ignores_stale_eventsource_disconnects_and_resets_transient_state():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+
+    assert "function resetSessionTransientState()" in app_js
+    assert "state.activeRunId = null;" in app_js
+    assert "state.runMessageIds = {};" in app_js
+    assert "state.followRunOutput = false;" in app_js
+    assert "if (state.eventSource) {" in app_js
+    assert "state.eventSource.onerror = null;" in app_js
+    assert "state.eventSource.close();" in app_js
+    assert "const sourceSessionId = sessionId;" in app_js
+    assert "state.eventSource !== source || state.currentSessionId !== sourceSessionId" in app_js or "if (state.eventSource !== source) {" in app_js
+
+
+def test_agui_web_new_session_and_session_bootstrap_paths_handle_errors():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+
+    assert "renderSystemMessage(`创建会话失败：" in app_js
+    assert "renderSystemMessage(`初始化会话失败：" in app_js
+    assert "ui.newSession.addEventListener('click', async () => {" in app_js
+    assert "try {" in app_js
+
+
 def test_agui_web_renders_inline_collapsed_tool_execution_flow():
     root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
     app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
@@ -175,6 +200,55 @@ def test_agui_web_renders_inline_hitl_cards_and_result_summary():
     assert ".inline-hitl" in styles
 
 
+def test_agui_web_uses_interrupt_metadata_and_polished_hitl_labels():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+    styles = (root / "src" / "styles.css").read_text(encoding="utf-8")
+
+    assert "interrupt.title || interrupt.prompt || interrupt.kind" in app_js
+    assert "interrupt.confirm_label || '继续执行'" in app_js
+    assert "interrupt.cancel_label || '取消'" in app_js
+    assert "interrupt.confirm_label || '提交并继续'" in app_js
+    assert "已确认执行" in app_js
+    assert "已取消" in app_js
+    assert "已提交：" in app_js
+    assert "interrupt-card inline-hitl ${severityClass}" in app_js
+    assert "slim-confirm" in app_js
+    assert "interrupt-shell" in app_js
+    assert "interrupt-meta-code" in app_js
+    assert ".interrupt-card.warning" in styles
+    assert ".interrupt-card.danger" in styles
+    assert ".interrupt-card.slim-confirm" in styles
+    assert ".interrupt-shell" in styles
+    assert "@keyframes hitlCardEnter" in styles
+    assert ".interrupt-card.resolved" in styles
+
+
+def test_agui_web_preview_pane_uses_chinese_controls_and_no_question_placeholders():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+
+    assert "<strong>预览</strong>" in app_js
+    assert "折叠" in app_js
+    assert "关闭" in app_js
+    assert "展开预览" in app_js
+    assert "查看源码" in app_js
+    assert "查看渲染" in app_js
+    assert "复制源码" in app_js
+    assert "????" not in app_js
+
+
+def test_agui_web_hitl_cards_use_chinese_confirm_copy():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation")
+    loop_py = (root / "nanobot" / "agent" / "loop.py").read_text(encoding="utf-8")
+
+    assert "\\u6267\\u884c\\u547d\\u4ee4\\u524d\\u786e\\u8ba4" in loop_py
+    assert "\\u8986\\u76d6\\u6587\\u4ef6\\u524d\\u786e\\u8ba4" in loop_py
+    assert "\\u7ee7\\u7eed\\u6267\\u884c" in loop_py
+    assert "\\u786e\\u8ba4\\u8986\\u76d6" in loop_py
+    assert "\\u53d6\\u6d88" in loop_py
+
+
 def test_agui_web_projects_task_events_still_update_runtime_status():
     root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
     app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
@@ -205,6 +279,21 @@ def test_agui_web_tool_flow_is_bound_to_assistant_message_position():
     assert "status: event.type === 'tool.failed' ? 'failed' : 'completed'" in app_js
     assert "runMessageIds" in app_js
     assert "event.run_id || state.activeRunId" in app_js
+
+
+def test_agui_web_assistant_transcript_spacing_is_compact():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    styles = (root / "src" / "styles.css").read_text(encoding="utf-8")
+
+    assert ".transcript" in styles
+    assert "gap: 6px;" in styles
+    assert ".message.assistant" in styles
+    assert "gap: 4px;" in styles
+    assert ".tool-flow" in styles
+    assert "margin-top: 2px;" in styles
+    assert ".tool-compact-summary" in styles
+    assert ".message-attachments" in styles
+    assert ".message-artifact-references" in styles
 
 
 def test_agui_web_thinking_indicator_uses_blinking_state_not_ellipsis():
@@ -265,11 +354,11 @@ def test_agui_web_dev_only_version_badge_exists_for_cache_debugging():
     styles = (root / "src" / "styles.css").read_text(encoding="utf-8")
     index_html = (root / "index.html").read_text(encoding="utf-8")
 
-    assert "const FRONTEND_VERSION = '20260311-04'" in app_js
+    assert "const FRONTEND_VERSION = '20260311-11'" in app_js
     assert "function shouldShowDevVersionBadge()" in app_js
     assert "dev-version-badge" in app_js
     assert ".dev-version-badge" in styles
-    assert "app.js?v=20260311-04" in index_html
+    assert "app.js?v=20260311-11" in index_html
 
 
 def test_agui_web_renders_assistant_markdown_and_compact_tool_summary():
@@ -309,6 +398,22 @@ def test_agui_web_auto_scroll_is_anchored_to_sent_message_then_follows_stream():
     assert "state.followRunOutput = false;" in app_js
     assert "function adjustTranscriptScroll()" in app_js
     assert "if (!chunk) {" in app_js
+
+
+def test_agui_frontend_path_fallback_checks_preview_before_rendering_click_target():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+
+    assert "const previewable = [];" in app_js
+    assert "await canPreviewPathRef(ref)" in app_js
+    assert "const sorted = previewable.sort" in app_js
+
+
+def test_agui_frontend_path_preview_failure_uses_human_message():
+    root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
+    app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
+
+    assert "该文件当前无法预览，可能已经被删除或移动。" in app_js
 
 
 def test_agui_web_clickable_path_references_are_inline_and_open_split_preview():
@@ -466,13 +571,13 @@ def test_agui_web_reference_variants_cover_windows_paths_after_markdown_renderin
     assert "entry.variants.some(variant => original.includes(variant))" in app_js
 
 
-def test_agui_web_inline_path_links_do_not_wait_for_preview_probe_before_rendering():
+def test_agui_web_inline_path_links_wait_for_preview_probe_before_rendering():
     root = Path(r"D:/workspace/Nano-claw/nanobot/.worktrees/agui-implementation/apps/agui-web")
     app_js = (root / "src" / "app.js").read_text(encoding="utf-8")
 
-    assert "const checks = await Promise.all(uniqRefs.map(ref => canPreviewPathRef(ref)));" not in app_js
-    assert "const validRefs = uniqRefs.filter((_ref, idx) => checks[idx]);" not in app_js
-    assert "const sorted = [...new Set(refs)]" in app_js
+    assert "const previewable = [];" in app_js
+    assert "if (await canPreviewPathRef(ref)) {" in app_js
+    assert "const sorted = previewable.sort" in app_js
 
 
 def test_agui_web_message_artifact_images_render_as_clickable_thumbnails():

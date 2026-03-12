@@ -4,10 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>nanobot AGUI web</title>
-    <link rel="stylesheet" href="./src/styles.css?v=20260311-04" />
+    <link rel="stylesheet" href="./src/styles.css?v=20260311-11" />
   </head>
   <body>
-    <div id="app"><div style="padding:24px;font:14px/1.5 'Segoe UI',sans-serif;color:#111827;">AGUI ????...</div></div>
+    <div id="app"><div style="padding:24px;font:14px/1.5 'Segoe UI',sans-serif;color:#111827;">AGUI 正在启动...</div></div>
     <script>
       window.__nanobotBootState = 'loading';
       window.__nanobotBootError = null;
@@ -15,7 +15,7 @@
         window.__nanobotBootError = event && event.message ? event.message : 'Unknown startup error';
         var el = document.getElementById('app');
         if (el && window.__nanobotBootState !== 'bootstrapped') {
-          el.innerHTML = '<div style="padding:24px;font:14px/1.5 Segoe UI,sans-serif;color:#991b1b;background:#fff1f2;border:1px solid #fecdd3;border-radius:12px;margin:16px;">???????' + String(window.__nanobotBootError) + '</div>';
+          el.innerHTML = '<div style="padding:24px;font:14px/1.5 Segoe UI,sans-serif;color:#991b1b;background:#fff1f2;border:1px solid #fecdd3;border-radius:12px;margin:16px;">前端启动失败：' + String(window.__nanobotBootError) + '</div>';
         }
       });
       window.addEventListener('unhandledrejection', function (event) {
@@ -23,22 +23,22 @@
         window.__nanobotBootError = reason && reason.message ? reason.message : String(reason || 'Unhandled promise rejection');
         var el = document.getElementById('app');
         if (el && window.__nanobotBootState !== 'bootstrapped') {
-          el.innerHTML = '<div style="padding:24px;font:14px/1.5 Segoe UI,sans-serif;color:#991b1b;background:#fff1f2;border:1px solid #fecdd3;border-radius:12px;margin:16px;">???????' + String(window.__nanobotBootError) + '</div>';
+          el.innerHTML = '<div style="padding:24px;font:14px/1.5 Segoe UI,sans-serif;color:#991b1b;background:#fff1f2;border:1px solid #fecdd3;border-radius:12px;margin:16px;">前端启动失败：' + String(window.__nanobotBootError) + '</div>';
         }
       });
       window.setTimeout(function () {
         var el = document.getElementById('app');
         if (el && window.__nanobotBootState !== 'bootstrapped' && !window.__nanobotBootError) {
-          el.innerHTML = '<div style="padding:24px;font:14px/1.5 Segoe UI,sans-serif;color:#92400e;background:#fffbeb;border:1px solid #fcd34d;border-radius:12px;margin:16px;">???????????????????????</div>';
+          el.innerHTML = '<div style="padding:24px;font:14px/1.5 Segoe UI,sans-serif;color:#92400e;background:#fffbeb;border:1px solid #fcd34d;border-radius:12px;margin:16px;">前端加载超时，请检查本地服务是否正常。</div>';
         }
       }, 4000);
     </script>
     <script type="module">
-      import('./src/app.js?v=20260311-04').catch((error) => {
+      import('./src/app.js?v=20260311-11').catch((error) => {
         window.__nanobotBootError = error && error.message ? error.message : String(error || 'Module load failed');
         const el = document.getElementById('app');
         if (el && window.__nanobotBootState !== 'bootstrapped') {
-          el.innerHTML = '<div style="padding:24px;font:14px/1.5 Segoe UI,sans-serif;color:#991b1b;background:#fff1f2;border:1px solid #fecdd3;border-radius:12px;margin:16px;">???????' + String(window.__nanobotBootError) + '</div>';
+          el.innerHTML = '<div style="padding:24px;font:14px/1.5 Segoe UI,sans-serif;color:#991b1b;background:#fff1f2;border:1px solid #fecdd3;border-radius:12px;margin:16px;">前端启动失败：' + String(window.__nanobotBootError) + '</div>';
         }
         console.error('AGUI module import failed', error);
       });

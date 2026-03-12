@@ -31,7 +31,7 @@ const state = {
 
 const app = document.getElementById('app');
 let ui;
-const FRONTEND_VERSION = '20260311-04';
+const FRONTEND_VERSION = '20260311-11';
 
 function readStoredApiBase() {
   try {
@@ -305,6 +305,18 @@ function setRunState(nextState) {
   renderRightPane();
 }
 
+
+function resetSessionTransientState() {
+  state.pendingAssistantId = null;
+  state.pendingInterrupt = null;
+  state.activeRunId = null;
+  state.runMessageIds = {};
+  state.followRunOutput = false;
+  state.previewArtifactId = null;
+  state.previewCollapsed = false;
+  state.rightPaneMode = 'hidden';
+}
+
 function setSending(sending) {
   state.isSending = sending;
   updateStatusBar();
@@ -406,9 +418,12 @@ async function deleteSession(sessionId = state.currentSessionId) {
     if (state.currentSessionId === sessionId) {
       state.currentSessionId = null;
       state.messages = [];
+      resetSessionTransientState();
       renderTranscript();
       if (state.eventSource) {
+        state.eventSource.onerror = null;
         state.eventSource.close();
+        state.eventSource = null;
       }
     }
     await refreshSessions();
@@ -476,8 +491,7 @@ async function syncHistoryAfterCompletion(sessionId) {
 
 async function selectSession(sessionId) {
   state.currentSessionId = sessionId;
-  state.pendingAssistantId = null;
-  state.pendingInterrupt = null;
+  resetSessionTransientState();
   renderSessions();
   ui.sessionTitle.textContent = sessionId;
 
@@ -492,15 +506,24 @@ async function selectSession(sessionId) {
 
 function connectEventStream(sessionId) {
   if (state.eventSource) {
+    state.eventSource.onerror = null;
     state.eventSource.close();
+    state.eventSource = null;
   }
 
   const source = new EventSource(`${state.apiBase}/sessions/${sessionId}/events`);
+  const sourceSessionId = sessionId;
   state.eventSource = source;
   setConnectionStatus('online');
 
   ['run.started', 'message.started', 'message.delta', 'message.completed', 'tool.started', 'tool.completed', 'tool.failed', 'task.started', 'task.updated', 'task.completed', 'task.failed', 'artifact.created', 'artifact.updated', 'artifact.referenced', 'interrupt.requested', 'interrupt.resolved', 'error'].forEach(name => {
     source.addEventListener(name, event => {
+      if (state.eventSource !== source) {
+        return;
+      }
+      if (state.currentSessionId !== sourceSessionId) {
+        return;
+      }
       setConnectionStatus('online');
       state.lastEventAt = Date.now();
       updateStatusBar();
@@ -509,6 +532,12 @@ function connectEventStream(sessionId) {
   });
 
   source.onerror = () => {
+    if (state.eventSource !== source) {
+      return;
+    }
+    if (state.currentSessionId !== sourceSessionId) {
+      return;
+    }
     setConnectionStatus('offline');
     renderSystemMessage('事件流连接已断开。');
   };
@@ -1266,7 +1295,7 @@ async function openPathPreviewByReference(pathRef) {
       content: preview.content,
     });
   } catch (error) {
-    renderSystemMessage(`Path preview failed: ${error.message}`);
+    renderSystemMessage('该文件当前无法预览，可能已经被删除或移动。');
   }
 }
 
@@ -1380,9 +1409,16 @@ async function enhancePathReferencesInline(container, content) {
   if (!refs.length) {
     return;
   }
-  const sorted = [...new Set(refs)]
-    .map(ref => ({ ref, variants: buildReferenceTextVariants(ref) }))
-    .sort((a, b) => b.variants[0].length - a.variants[0].length);
+  const previewable = [];
+  for (const ref of [...new Set(refs)]) {
+    if (await canPreviewPathRef(ref)) {
+      previewable.push({ ref, variants: buildReferenceTextVariants(ref) });
+    }
+  }
+  if (!previewable.length) {
+    return;
+  }
+  const sorted = previewable.sort((a, b) => b.variants[0].length - a.variants[0].length);
   const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
   const textNodes = [];
   let node;
@@ -1491,6 +1527,24 @@ function isCodePreview(artifact) {
   return artifact?.type === 'code' || mime.includes('json') || mime.includes('javascript') || mime.includes('python') || /\.(py|js|ts|tsx|jsx|css|scss|json|yaml|yml|sh|bat|ps1|toml|ini|sql|xml)$/.test(path);
 }
 
+function formatArtifactKindLabel(artifact) {
+  const kind = String(artifact?.type || 'file').toLowerCase();
+  switch (kind) {
+    case 'code':
+      return '代码';
+    case 'image':
+      return '图片';
+    case 'diagram':
+      return '图表';
+    case 'report':
+      return '文档';
+    case 'link':
+      return '链接';
+    default:
+      return '文件';
+  }
+}
+
 function resolveArtifactContentUrl(artifact) {
   if (!artifact) {
     return '';
@@ -1513,7 +1567,7 @@ function renderArtifactPreviewBody(artifact) {
   }
   if (artifact.type === 'image') {
     const src = resolveArtifactContentUrl(artifact);
-    return src ? `<img class="preview-image" src="${escapeHtmlAttribute(src)}" alt="${escapeHtmlAttribute(artifact.title || 'preview')}" />` : '<div class="empty">????????</div>';
+    return src ? `<img class="preview-image" src="${escapeHtmlAttribute(src)}" alt="${escapeHtmlAttribute(artifact.title || 'preview')}" />` : '<div class="empty">暂无可预览内容</div>';
   }
   if (isMarkdownPreview(artifact)) {
     return `<div class="preview-markdown">${renderMarkdown(artifact.content || artifact.preview_text || '')}</div>`;
@@ -1610,14 +1664,20 @@ async function sendCurrentMessage() {
     return;
   }
 
-  if (!state.currentSessionId) {
-    const session = await createSession();
-    await refreshSessions(session.session_id);
-  }
-
   const content = ui.composer.value.trim();
   if (!content) {
     return;
+  }
+
+  if (!state.currentSessionId) {
+    try {
+      const session = await createSession();
+      await refreshSessions(session.session_id);
+    } catch (error) {
+      renderSystemMessage(`初始化会话失败：${error.message}`);
+      setConnectionStatus('offline');
+      return;
+    }
   }
 
   const sentAttachments = [...state.attachments];
@@ -1748,24 +1808,24 @@ function syncPendingInterrupt() {
 
 function summarizeInterruptValue(value) {
   if (value === true) {
-    return '?????';
+    return '已确认执行';
   }
   if (value === false) {
-    return '???';
+    return '已取消';
   }
   if (Array.isArray(value)) {
-    return `????${value.join('?')}`;
+    return `已选择：${value.join('、')}`;
   }
   if (value && typeof value === 'object') {
     const entries = Object.entries(value)
       .filter(([, item]) => item != null && item !== '' && item !== false)
-      .map(([key, item]) => `${key}: ${String(item)}`);
-    return entries.length > 0 ? `????${entries.join('?')}` : '???';
+      .map(([key, item]) => `${key}=${String(item)}`);
+    return entries.length > 0 ? `已提交：${entries.join('，')}` : '已提交';
   }
   if (value == null || value === '') {
-    return '???';
+    return '已提交';
   }
-  return `????${String(value)}`;
+  return `已提交：${String(value)}`;
 }
 
 function renderMessageInterrupt(container, message) {
@@ -1812,17 +1872,30 @@ function renderMessageArtifactReferences(container, message) {
 
 function buildInterruptCard(interrupt) {
   const card = document.createElement('div');
-  card.className = 'interrupt-card inline-hitl';
-  const title = document.createElement('strong');
-  title.textContent = interrupt.prompt || interrupt.kind;
-  card.appendChild(title);
-  if (interrupt.description) {
-    const desc = document.createElement('div');
-    desc.className = 'interrupt-desc';
-    desc.textContent = interrupt.description;
-    card.appendChild(desc);
+  const severityClass = interrupt.severity ? String(interrupt.severity).toLowerCase() : 'info';
+  card.className = `interrupt-card inline-hitl ${severityClass}${interrupt.resultSummary ? ' resolved' : ''}`;
+  const title = document.createElement('div');
+  title.className = 'interrupt-title';
+  title.textContent = interrupt.title || interrupt.prompt || interrupt.kind;
+  const desc = document.createElement('div');
+  desc.className = 'interrupt-desc';
+  const lines = interrupt.description ? String(interrupt.description).split('\n').filter(Boolean) : [];
+  const lead = document.createElement('div');
+  lead.textContent = lines[0] || '';
+  if (lines.length > 0) {
+    desc.appendChild(lead);
+  }
+  let meta = null;
+  if (lines.length > 1) {
+    meta = document.createElement('pre');
+    meta.className = 'interrupt-meta-code';
+    meta.textContent = lines.slice(1).join('\n');
   }
   if (interrupt.resultSummary) {
+    card.appendChild(title);
+    if (lines.length > 0) {
+      card.appendChild(desc);
+    }
     const summary = document.createElement('div');
     summary.className = 'interrupt-result';
     summary.textContent = interrupt.resultSummary;
@@ -1830,10 +1903,22 @@ function buildInterruptCard(interrupt) {
     return card;
   }
   if (interrupt.kind === 'confirm') {
+    card.classList.add('slim-confirm');
+    const shell = document.createElement('div');
+    shell.className = 'interrupt-shell';
+    const copy = document.createElement('div');
+    copy.className = 'interrupt-copy';
+    copy.appendChild(title);
+    if (lines.length > 0) {
+      copy.appendChild(desc);
+    }
+    if (meta) {
+      copy.appendChild(meta);
+    }
     const row = document.createElement('div');
-    row.className = 'composer-actions';
+    row.className = 'interrupt-actions';
     const approve = document.createElement('button');
-    approve.textContent = '??';
+    approve.textContent = interrupt.confirm_label || '继续执行';
     approve.className = 'btn primary';
     approve.disabled = interrupt.status === 'submitting';
     approve.addEventListener('click', () => {
@@ -1841,22 +1926,30 @@ function buildInterruptCard(interrupt) {
     });
     const reject = document.createElement('button');
     reject.className = 'btn ghost';
-    reject.textContent = '??';
+    reject.textContent = interrupt.cancel_label || '取消';
     reject.disabled = interrupt.status === 'submitting';
     reject.addEventListener('click', () => {
       void respondInterrupt(interrupt, false);
     });
     row.append(approve, reject);
-    card.appendChild(row);
+    shell.append(copy, row);
+    card.appendChild(shell);
     return card;
+  }
+  card.appendChild(title);
+  if (lines.length > 0) {
+    card.appendChild(desc);
+  }
+  if (meta) {
+    card.appendChild(meta);
   }
   if (interrupt.kind === 'single_select') {
     const row = document.createElement('div');
-    row.className = 'composer-actions';
+    row.className = 'interrupt-actions';
     for (const option of interrupt.options || []) {
       const choose = document.createElement('button');
       choose.className = 'btn ghost';
-      choose.textContent = option.label || option.id || '??';
+      choose.textContent = option.label || option.id || '选项';
       choose.disabled = interrupt.status === 'submitting';
       choose.addEventListener('click', () => {
         void respondInterrupt(interrupt, option.id ?? option.value ?? option.label ?? true);
@@ -1906,11 +1999,11 @@ function buildInterruptCard(interrupt) {
       form.appendChild(fieldWrap);
     }
     const row = document.createElement('div');
-    row.className = 'composer-actions';
+    row.className = 'interrupt-actions';
     const submit = document.createElement('button');
     submit.className = 'btn primary';
     submit.type = 'submit';
-    submit.textContent = '??';
+    submit.textContent = interrupt.confirm_label || '提交并继续';
     submit.disabled = interrupt.status === 'submitting';
     row.appendChild(submit);
     form.appendChild(row);
@@ -2015,7 +2108,7 @@ function renderRightPane() {
 
   if (state.previewCollapsed) {
     ui.rightPane.innerHTML = `
-      <button id="preview-handle" type="button" class="preview-handle" title="Expand preview">Open</button>
+      <button id="preview-handle" type="button" class="preview-handle" title="展开预览">展开</button>
     `;
     document.getElementById('preview-handle')?.addEventListener('click', () => togglePreviewCollapse());
     return;
@@ -2026,8 +2119,8 @@ function renderRightPane() {
   const previewBody = isDiagram
     ? `
       <div class="mermaid-preview-mode">
-        <button id="toggle-diagram-view" type="button" class="btn ghost">${isSourceMode ? 'Rendered' : 'Source'}</button>
-        <button id="copy-mermaid-source" type="button" class="btn ghost">Copy source</button>
+        <button id="toggle-diagram-view" type="button" class="btn ghost">${isSourceMode ? '查看渲染' : '查看源码'}</button>
+        <button id="copy-mermaid-source" type="button" class="btn ghost">复制源码</button>
       </div>
       ${isSourceMode
         ? `<pre class="mermaid-source">${escapeHtml(artifact.preview_text || '')}</pre>`
@@ -2037,15 +2130,15 @@ function renderRightPane() {
 
   ui.rightPane.innerHTML = `
     <div class="pane-head">
-      <strong>Preview</strong>
+      <strong>预览</strong>
       <div class="pane-actions">
-        <button id="collapse-preview" class="btn ghost" type="button">Collapse</button>
-        <button id="close-preview" class="btn ghost" type="button">Close</button>
+        <button id="collapse-preview" class="btn ghost" type="button">折叠</button>
+        <button id="close-preview" class="btn ghost" type="button">关闭</button>
       </div>
     </div>
     <div class="pane-block">
       <div class="pane-title">${artifact.title || artifact.artifact_id}</div>
-      <div class="pane-meta">${artifact.type || 'file'}${artifact.mime_type ? ` ? ${artifact.mime_type}` : ''}</div>
+      <div class="pane-meta">${formatArtifactKindLabel(artifact)}${artifact.mime_type ? ` · ${artifact.mime_type}` : ''}</div>
       ${artifact.path ? `<div class="pane-path">${escapeHtml(artifact.path)}</div>` : ''}
       ${previewBody || ''}
     </div>
@@ -2117,8 +2210,13 @@ function bindUiHandlers() {
   });
 
   ui.newSession.addEventListener('click', async () => {
-    const session = await createSession();
-    await refreshSessions(session.session_id);
+    try {
+      const session = await createSession();
+      await refreshSessions(session.session_id);
+    } catch (error) {
+      renderSystemMessage(`创建会话失败：${error.message}`);
+      setConnectionStatus('offline');
+    }
   });
 
   ui.deleteCurrentSession.addEventListener('click', () => {

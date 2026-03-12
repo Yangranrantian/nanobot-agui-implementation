@@ -66,7 +66,7 @@ class WebRuntime:
         self.image_model_primary = image_model_primary
         self.provider_name = provider_name
         self._event_queues: dict[str, asyncio.Queue[dict]] = {}
-        self._pending_interrupts: dict[str, tuple[str, asyncio.Future[InterruptResponse], InterruptEnvelope]] = {}
+        self._pending_interrupts: dict[str, tuple[str, str, asyncio.Future[InterruptResponse], InterruptEnvelope]] = {}
         self._artifacts: dict[str, Artifact] = {}
         self._preview_roots = [p.resolve() for p in (preview_roots or self._default_preview_roots())]
         self._fallback_search_roots = [p.resolve() for p in self._default_fallback_search_roots()]
@@ -342,19 +342,27 @@ class WebRuntime:
         envelope = InterruptEnvelope(
             interrupt_id=interrupt_id,
             session_id=session_id,
+            run_id=request.run_id,
             kind=request.kind,
             prompt=request.prompt,
+            title=request.title,
+            description=request.description,
+            severity=request.severity,
+            confirm_label=request.confirm_label,
+            cancel_label=request.cancel_label,
             options=request.options,
             fields=request.fields,
+            context_artifact_ids=request.context_artifact_ids,
+            default_value=request.default_value,
         )
         future: asyncio.Future[InterruptResponse] = asyncio.get_running_loop().create_future()
-        self._pending_interrupts[interrupt_id] = (session_id, future, envelope)
+        self._pending_interrupts[interrupt_id] = (session_id, request.run_id or "", future, envelope)
         await self.publish_event(session_id, make_event("interrupt.requested", **envelope.model_dump()))
         return await future
 
     def list_pending_interrupts(self, session_id: str) -> list[dict]:
         items = []
-        for interrupt_session_id, _future, envelope in self._pending_interrupts.values():
+        for interrupt_session_id, _run_id, _future, envelope in self._pending_interrupts.values():
             if interrupt_session_id == session_id:
                 items.append(envelope.model_dump())
         return items
@@ -365,15 +373,25 @@ class WebRuntime:
         interrupt_id: str,
         response: InterruptResponse,
     ) -> InterruptResolvedResponse:
-        pending = self._pending_interrupts.pop(interrupt_id)
-        pending_session_id, future, _envelope = pending
+        pending = self._pending_interrupts.get(interrupt_id)
+        if pending is None:
+            raise KeyError(interrupt_id)
+        pending_session_id, pending_run_id, future, _envelope = pending
         if pending_session_id != session_id:
             raise KeyError(interrupt_id)
+        self._pending_interrupts.pop(interrupt_id, None)
         if not future.done():
             future.set_result(response)
         await self.publish_event(
             session_id,
-            make_event("interrupt.resolved", interrupt_id=interrupt_id, session_id=session_id, value=response.value, kind=response.kind),
+            make_event(
+                "interrupt.resolved",
+                interrupt_id=interrupt_id,
+                session_id=session_id,
+                run_id=pending_run_id or None,
+                value=response.value,
+                kind=response.kind,
+            ),
         )
         return InterruptResolvedResponse(status="resolved", session_id=session_id, interrupt_id=interrupt_id)
 

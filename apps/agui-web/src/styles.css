@@ -331,7 +331,7 @@ select { font: inherit; }
   overflow-x: hidden;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   min-height: 0;
   padding-right: 8px;
   align-items: center;
@@ -424,7 +424,7 @@ select { font: inherit; }
 }
 
 .md-code {
-  margin: 8px 0;
+  margin: 4px 0;
   background: #0f172a;
   color: #e2e8f0;
   border-radius: 10px;
@@ -445,6 +445,7 @@ select { font: inherit; }
   background: transparent;
   border: none;
   padding: 0;
+  gap: 4px;
   max-width: min(820px, 92%);
   width: min(820px, 92%);
 }
@@ -459,7 +460,15 @@ select { font: inherit; }
 .message-attachments {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.message-artifact-references {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
 }
 
 .message-image {
@@ -545,11 +554,11 @@ select { font: inherit; }
 .tool-flow {
   display: grid;
   gap: 6px;
-  margin-top: 6px;
+  margin-top: 2px;
 }
 
 .tool-compact-summary {
-  margin-top: 6px;
+  margin-top: 2px;
   font-size: 12px;
   color: #64748b;
   background: #f1f5f9;
@@ -598,7 +607,7 @@ select { font: inherit; }
 }
 
 .tool-flow-detail {
-  margin-top: 6px;
+  margin-top: 4px;
   display: grid;
   gap: 4px;
   white-space: pre-wrap;
@@ -615,8 +624,8 @@ select { font: inherit; }
 .tool-hints {
   display: grid;
   gap: 4px;
-  margin-top: 2px;
-  margin-bottom: 4px;
+  margin-top: 0;
+  margin-bottom: 2px;
 }
 
 .tool-hint-item {
@@ -711,7 +720,7 @@ select { font: inherit; }
 }
 
 .thinking-tail {
-  margin-top: 4px;
+  margin-top: 1px;
 }
 
 @keyframes thinkingPulse {
@@ -760,30 +769,119 @@ select { font: inherit; }
 }
 
 .interrupt-card {
-  border: 1px solid #fcd34d;
-  border-radius: 10px;
-  padding: 10px;
-  background: #fffbeb;
-  color: #92400e;
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  padding: 12px 14px;
+  animation: hitlCardEnter 180ms ease-out;
+  transition: background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease, opacity 160ms ease;
+  background: #ffffff;
+  color: #111827;
   display: grid;
-  gap: 8px;
+  gap: 10px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
 .inline-hitl {
-  border-color: #fdba74;
-  background: #fff7ed;
+  border-color: #dbe3f0;
+  background: #fbfcfe;
 }
+
+.interrupt-card.info {
+  border-color: #dbeafe;
+  background: #f8fbff;
+}
+
+.interrupt-card.warning {
+  border-color: #fed7aa;
+  background: #fffaf2;
+}
+
+.interrupt-card.danger {
+  border-color: #fecaca;
+  background: #fff5f5;
+}
+
 
 .interrupt-desc {
   font-size: 12px;
-  color: #9a3412;
+  color: #475569;
+  line-height: 1.5;
+}
+
+.interrupt-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.interrupt-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+.interrupt-copy {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.interrupt-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.interrupt-actions .btn {
+  min-width: 0;
+}
+
+.interrupt-card.slim-confirm {
+  padding: 8px 10px;
+  border-radius: 14px;
+}
+
+.interrupt-card.slim-confirm .interrupt-actions {
+  flex-wrap: nowrap;
+}
+
+.interrupt-card.slim-confirm .interrupt-meta-code {
+  margin-top: 2px;
 }
 
 .interrupt-result {
-  border: 1px solid #fed7aa;
-  border-radius: 8px;
-  background: #fffbeb;
-  padding: 6px 8px;
+  border: 1px solid #dbe3f0;
+  border-radius: 10px;
+  background: #f8fafc;
+  padding: 6px 9px;
+  color: #334155;
+  font-size: 12px;
+}
+
+.interrupt-meta-code {
+  margin: 0;
+  border-radius: 10px;
+  border: 1px solid #e5e7eb;
+  background: #f8fafc;
+  padding: 10px 12px;
+  color: #0f172a;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-x: auto;
+}
+
+@media (max-width: 720px) {
+  .interrupt-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .interrupt-card.slim-confirm .interrupt-actions {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
 }
 
 .empty { color: var(--muted); }
@@ -919,4 +1017,25 @@ select { font: inherit; }
   border: 1px solid #dbe4f0;
   cursor: zoom-in;
   background: #f8fafc;
+}
+
+@keyframes hitlCardEnter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.interrupt-card.resolved {
+  box-shadow: none;
+  opacity: 0.96;
+}
+
+.interrupt-meta-code {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.06);
+  color: #0f172a;
+  font: 12px/1.5 Consolas, 'SFMono-Regular', monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
 }

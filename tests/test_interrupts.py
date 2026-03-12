@@ -1,11 +1,11 @@
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from nanobot.agent.loop import AgentLoop
 from nanobot.bus.queue import MessageBus
-from nanobot.providers.base import LLMResponse
+from nanobot.providers.base import LLMResponse, ToolCallRequest
 from nanobot.web.interrupts import InterruptRequest, InterruptResponse
 from nanobot.web.runtime import WebRuntime
 
@@ -28,7 +28,7 @@ async def test_agent_loop_can_request_interrupt_and_wait(tmp_path):
     loop = _make_loop(tmp_path)
     runtime = WebRuntime(tmp_path, agent_loop=loop)
 
-    async def fake_run(initial_messages, on_progress=None, on_event=None, emit_progress_text=True):
+    async def fake_run(initial_messages, on_progress=None, on_event=None, emit_progress_text=True, **_kwargs):
         response = await loop.request_interrupt(
             "web:sess_interrupt",
             InterruptRequest(kind="confirm", prompt="Approve?"),
@@ -87,7 +87,7 @@ async def test_dispatch_message_persists_history_for_runtime_reader(tmp_path):
     loop = _make_loop(tmp_path)
     runtime = WebRuntime(tmp_path, agent_loop=loop)
 
-    async def fake_run(initial_messages, on_progress=None, on_event=None, emit_progress_text=True):
+    async def fake_run(initial_messages, on_progress=None, on_event=None, emit_progress_text=True, **_kwargs):
         return "saved reply", [], [
             *initial_messages,
             {"role": "assistant", "content": "saved reply"},
@@ -287,3 +287,346 @@ def test_interrupt_envelope_supports_anchor_message_id():
     )
 
     assert envelope.anchor_message_id == "msg_1"
+
+
+def test_interrupt_request_supports_workflow_metadata_fields():
+    request = InterruptRequest(
+        kind="confirm",
+        prompt="Approve command?",
+        title="Execution confirmation",
+        description="This command may modify files",
+        severity="warning",
+        confirm_label="Run command",
+        cancel_label="Cancel",
+        default_value=True,
+        context_artifact_ids=["art_cmd"],
+    )
+
+    assert request.title == "Execution confirmation"
+    assert request.severity == "warning"
+    assert request.confirm_label == "Run command"
+    assert request.cancel_label == "Cancel"
+    assert request.default_value is True
+
+
+def test_interrupt_request_supports_form_fields_and_select_options():
+    request = InterruptRequest(
+        kind="form",
+        prompt="Need more info",
+        title="Clarify parameters",
+        options=[{"label": "Docs", "value": "docs"}],
+        fields=[{"name": "filename", "type": "text", "required": True}],
+    )
+
+    assert request.title == "Clarify parameters"
+    assert request.options == [{"label": "Docs", "value": "docs"}]
+    assert request.fields == [{"name": "filename", "type": "text", "required": True}]
+
+
+def test_interrupt_envelope_supports_run_id_and_custom_labels():
+    from nanobot.web.interrupts import InterruptEnvelope
+
+    envelope = InterruptEnvelope(
+        interrupt_id="int_1",
+        session_id="sess_1",
+        run_id="run_1",
+        kind="confirm",
+        prompt="Approve command?",
+        title="Execution confirmation",
+        confirm_label="Continue",
+        cancel_label="Stop",
+    )
+
+    assert envelope.run_id == "run_1"
+    assert envelope.title == "Execution confirmation"
+    assert envelope.confirm_label == "Continue"
+    assert envelope.cancel_label == "Stop"
+
+
+@pytest.mark.asyncio
+async def test_runtime_tracks_pending_interrupt_by_session_run_and_id(tmp_path):
+    loop = _make_loop(tmp_path)
+    runtime = WebRuntime(tmp_path, agent_loop=loop)
+
+    request = InterruptRequest(kind="confirm", prompt="Approve?", title="Confirm run", run_id="run_123")
+    task = asyncio.create_task(runtime.handle_interrupt("web:sess_track", request))
+
+    await asyncio.sleep(0)
+    pending = runtime.list_pending_interrupts("sess_track")
+    assert len(pending) == 1
+    assert pending[0]["run_id"] == "run_123"
+
+    await runtime.resolve_interrupt("sess_track", pending[0]["interrupt_id"], InterruptResponse(kind="confirm", value=True))
+    response = await task
+
+    assert response.value is True
+    assert runtime.list_pending_interrupts("sess_track") == []
+
+
+@pytest.mark.asyncio
+async def test_runtime_wrong_session_does_not_resume_pending_interrupt(tmp_path):
+    loop = _make_loop(tmp_path)
+    runtime = WebRuntime(tmp_path, agent_loop=loop)
+
+    request = InterruptRequest(kind="confirm", prompt="Approve?", run_id="run_abc")
+    task = asyncio.create_task(runtime.handle_interrupt("web:sess_a", request))
+
+    await asyncio.sleep(0)
+    pending = runtime.list_pending_interrupts("sess_a")
+    interrupt_id = pending[0]["interrupt_id"]
+
+    with pytest.raises(KeyError):
+        await runtime.resolve_interrupt("sess_b", interrupt_id, InterruptResponse(kind="confirm", value=False))
+
+    assert not task.done()
+
+    await runtime.resolve_interrupt("sess_a", interrupt_id, InterruptResponse(kind="confirm", value=True))
+    response = await task
+    assert response.value is True
+
+
+@pytest.mark.asyncio
+async def test_exec_tool_requires_confirmation_before_execution(tmp_path):
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+    provider.chat = AsyncMock(side_effect=[
+        LLMResponse(
+            content="Need to run a command",
+            tool_calls=[ToolCallRequest(id="tc_exec", name="exec", arguments={"command": "echo hi"})],
+        ),
+        LLMResponse(content="command finished", tool_calls=[]),
+    ])
+    loop = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, model="test-model", memory_window=10)
+    runtime = WebRuntime(tmp_path, agent_loop=loop)
+
+    execute_calls = []
+
+    async def fake_execute(name, arguments):
+        execute_calls.append((name, arguments))
+        return "ok"
+
+    loop.tools.execute = fake_execute
+
+    task = asyncio.create_task(
+        loop.process_direct("run the command", session_key="web:sess_exec", channel="web", chat_id="sess_exec")
+    )
+
+    await asyncio.sleep(0)
+    pending = runtime.list_pending_interrupts("sess_exec")
+
+    assert len(pending) == 1
+    assert pending[0]["kind"] == "confirm"
+    assert pending[0]["title"] == "执行命令前确认"
+    assert "需要先执行一条命令" in pending[0]["description"]
+    assert pending[0]["confirm_label"] == "继续执行"
+    assert pending[0]["cancel_label"] == "取消"
+    assert execute_calls == []
+
+    await runtime.resolve_interrupt("sess_exec", pending[0]["interrupt_id"], InterruptResponse(kind="confirm", value=True))
+    result = await task
+
+    assert result == "command finished"
+    assert execute_calls == [("exec", {"command": "echo hi"})]
+
+
+@pytest.mark.asyncio
+async def test_rejected_exec_confirmation_prevents_tool_execution(tmp_path):
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+    provider.chat = AsyncMock(return_value=LLMResponse(
+        content="Need to run a command",
+        tool_calls=[ToolCallRequest(id="tc_exec", name="exec", arguments={"command": "echo hi"})],
+    ))
+    loop = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, model="test-model", memory_window=10)
+    runtime = WebRuntime(tmp_path, agent_loop=loop)
+
+    execute_calls = []
+
+    async def fake_execute(name, arguments):
+        execute_calls.append((name, arguments))
+        return "ok"
+
+    loop.tools.execute = fake_execute
+
+    task = asyncio.create_task(
+        loop.process_direct("run the command", session_key="web:sess_exec_reject", channel="web", chat_id="sess_exec_reject")
+    )
+
+    await asyncio.sleep(0)
+    pending = runtime.list_pending_interrupts("sess_exec_reject")
+    assert len(pending) == 1
+
+    await runtime.resolve_interrupt("sess_exec_reject", pending[0]["interrupt_id"], InterruptResponse(kind="confirm", value=False))
+    result = await task
+
+    assert result == "操作已取消。"
+    assert execute_calls == []
+
+
+@pytest.mark.asyncio
+async def test_overwrite_existing_file_requires_confirmation(tmp_path):
+    existing = tmp_path / "notes.md"
+    existing.write_text("old", encoding="utf-8")
+
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+    provider.chat = AsyncMock(side_effect=[
+        LLMResponse(
+            content="Need to overwrite file",
+            tool_calls=[ToolCallRequest(id="tc_write", name="write_file", arguments={"path": str(existing), "content": "new"})],
+        ),
+        LLMResponse(content="write complete", tool_calls=[]),
+    ])
+    loop = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, model="test-model", memory_window=10)
+    runtime = WebRuntime(tmp_path, agent_loop=loop)
+
+    execute_calls = []
+
+    async def fake_execute(name, arguments):
+        execute_calls.append((name, arguments))
+        return "ok"
+
+    loop.tools.execute = fake_execute
+
+    task = asyncio.create_task(
+        loop.process_direct("overwrite notes", session_key="web:sess_write", channel="web", chat_id="sess_write")
+    )
+
+    await asyncio.sleep(0)
+    pending = runtime.list_pending_interrupts("sess_write")
+    assert len(pending) == 1
+    assert pending[0]["kind"] == "confirm"
+    assert pending[0]["title"] == "覆盖文件前确认"
+    assert "目标文件已存在" in pending[0]["description"]
+    assert pending[0]["confirm_label"] == "确认覆盖"
+    assert pending[0]["cancel_label"] == "取消"
+    assert execute_calls == []
+
+    await runtime.resolve_interrupt("sess_write", pending[0]["interrupt_id"], InterruptResponse(kind="confirm", value=True))
+    result = await task
+
+    assert result == "write complete"
+    assert execute_calls == [("write_file", {"path": str(existing), "content": "new"})]
+
+
+@pytest.mark.asyncio
+async def test_new_file_write_does_not_interrupt(tmp_path):
+    target = tmp_path / "fresh.md"
+
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+    provider.chat = AsyncMock(side_effect=[
+        LLMResponse(
+            content="Create a file",
+            tool_calls=[ToolCallRequest(id="tc_write", name="write_file", arguments={"path": str(target), "content": "hello"})],
+        ),
+        LLMResponse(content="write complete", tool_calls=[]),
+    ])
+    loop = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, model="test-model", memory_window=10)
+    runtime = WebRuntime(tmp_path, agent_loop=loop)
+
+    execute_calls = []
+
+    async def fake_execute(name, arguments):
+        execute_calls.append((name, arguments))
+        return "ok"
+
+    loop.tools.execute = fake_execute
+
+    result = await loop.process_direct("create file", session_key="web:sess_new_file", channel="web", chat_id="sess_new_file")
+
+    assert runtime.list_pending_interrupts("sess_new_file") == []
+    assert result == "write complete"
+    assert execute_calls == [("write_file", {"path": str(target), "content": "hello"})]
+
+
+@pytest.mark.asyncio
+async def test_read_file_without_path_requests_single_select_and_resumes_with_choice(tmp_path):
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir(parents=True, exist_ok=True)
+
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+    provider.chat = AsyncMock(side_effect=[
+        LLMResponse(
+            content="Need a path",
+            tool_calls=[ToolCallRequest(id="tc_read", name="read_file", arguments={})],
+        ),
+        LLMResponse(content="read complete", tool_calls=[]),
+    ])
+    loop = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, model="test-model", memory_window=10)
+    runtime = WebRuntime(tmp_path, agent_loop=loop)
+
+    execute_calls = []
+
+    async def fake_execute(name, arguments):
+        execute_calls.append((name, arguments))
+        return "content"
+
+    loop.tools.execute = fake_execute
+
+    task = asyncio.create_task(
+        loop.process_direct("read something", session_key="web:sess_read_select", channel="web", chat_id="sess_read_select")
+    )
+
+    await asyncio.sleep(0)
+    pending = runtime.list_pending_interrupts("sess_read_select")
+    assert len(pending) == 1
+    assert pending[0]["kind"] == "single_select"
+    assert pending[0]["title"] == "选择读取位置"
+    assert len(pending[0]["options"]) >= 1
+
+    selected = pending[0]["options"][0]["value"]
+    await runtime.resolve_interrupt(
+        "sess_read_select",
+        pending[0]["interrupt_id"],
+        InterruptResponse(kind="single_select", value=selected),
+    )
+    result = await task
+
+    assert result == "read complete"
+    assert execute_calls == [("read_file", {"path": selected})]
+
+
+@pytest.mark.asyncio
+async def test_write_file_without_path_requests_form_and_resumes_with_value(tmp_path):
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+    provider.chat = AsyncMock(side_effect=[
+        LLMResponse(
+            content="Need destination path",
+            tool_calls=[ToolCallRequest(id="tc_write_form", name="write_file", arguments={"content": "hello"})],
+        ),
+        LLMResponse(content="write complete", tool_calls=[]),
+    ])
+    loop = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, model="test-model", memory_window=10)
+    runtime = WebRuntime(tmp_path, agent_loop=loop)
+
+    execute_calls = []
+
+    async def fake_execute(name, arguments):
+        execute_calls.append((name, arguments))
+        return "ok"
+
+    loop.tools.execute = fake_execute
+
+    task = asyncio.create_task(
+        loop.process_direct("write something", session_key="web:sess_write_form", channel="web", chat_id="sess_write_form")
+    )
+
+    await asyncio.sleep(0)
+    pending = runtime.list_pending_interrupts("sess_write_form")
+    assert len(pending) == 1
+    assert pending[0]["kind"] == "form"
+    assert pending[0]["title"] == "补充文件路径"
+    assert pending[0]["fields"] == [{"name": "path", "label": "文件路径", "type": "text", "required": True}]
+
+    await runtime.resolve_interrupt(
+        "sess_write_form",
+        pending[0]["interrupt_id"],
+        InterruptResponse(kind="form", value={"path": "notes/generated.md"}),
+    )
+    result = await task
+
+    assert result == "write complete"
+    assert execute_calls == [("write_file", {"content": "hello", "path": "notes/generated.md"})]
